@@ -1,0 +1,81 @@
+[project]
+name = "diciphr"
+version = "0.2.1"
+description = "Diffusion MRI Processing tools of the UPenn DiCIPHR Lab"
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.6"
+authors = [{ name = "Drew Parker", email = "William.Parker@pennmedicine.upenn.edu" }]
+maintainers = [{ name = "Drew Parker", email = "William.Parker@pennmedicine.upenn.edu" }]
+keywords = ["diciphr", "diffusionimaging", "dti", "diffusionmri", "mri", 
+            "connectomics", "brain", "preprocessing", "registration",
+            "medical", "imaging"]
+classifiers = [
+    'Development Status :: 3 - Alpha',
+    'Environment :: Console',
+    'Intended Audience :: Developers',
+    'Intended Audience :: Science/Research',
+    'License :: OSI Approved :: BSD License',
+    'Programming Language :: Python',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.6',
+    'Programming Language :: Python :: 3 :: Only',
+    "Topic :: Software Development :: Libraries",
+    'Topic :: Scientific/Engineering',
+    'Operating System :: POSIX',
+    'Operating System :: Unix',
+    'Operating System :: MacOS',
+]
+
+dependencies = [
+    "numpy>=1.16.4",
+    "scipy>=1.2.1",
+    "nibabel>=3.2.1",
+    "sklearn>=0.20.3",
+    "json>=2.0.9",
+    "matplotlib>=3.0.3",
+    "statsmodels>=0.9.0",
+    "patsy>=0.5.1",
+    "pandas>=1.1.5",
+    "pydicom>=1.3.0",
+    "dipy>=1.4.1",
+]
+
+[project.scripts]
+compute_dti_scalars = "diciphr.scripts.compute_dti_scalars:main"
+concatenate_dwis = "diciphr.scripts.concatenate_dwis:main"
+connectome_measures = "diciphr.scripts.connectome_measures:main"
+convert_dicoms_to_nifti = "diciphr.scripts.convert_dicoms_to_nifti:main"
+convert_tracks = "diciphr.scripts.convert_tracks:main"
+crop_pad_nifti = "diciphr.scripts.crop_pad_nifti:main"
+cut_region = "diciphr.scripts.cut_region:main"
+downsample_tracks = "diciphr.scripts.downsample_tracks:main"
+dti_denoise = "diciphr.scripts.dti_denoise:main"
+dti_estimate = "diciphr.scripts.dti_estimate:main"
+dti_preprocess = "diciphr.scripts.dti_preprocess:main"
+dti_topup = "diciphr.scripts.dti_topup:main"
+dwi_bias_correct = "diciphr.scripts.dwi_bias_correct:main"
+extract_b0 = "diciphr.scripts.extract_b0:main"
+extract_shells_from_multishell_dwi = "diciphr.scripts.extract_shells_from_multishell_dwi:main"
+fernet_fw_dwi = "diciphr.scripts.fernet_fw_dwi:main"
+fernet = "diciphr.scripts.fernet:main"
+fernet_regions = "diciphr.scripts.fernet_regions:main"
+filter_tracks = "diciphr.scripts.filter_tracks:main"
+flip_bvecs = "diciphr.scripts.flip_bvecs:main"
+harmonize_data = "diciphr.scripts.harmonize_data:main"
+ols_analysis = "diciphr.scripts.ols_analysis:main"
+oscar = "diciphr.scripts.oscar:main"
+n4_bias_correction = "diciphr.scripts.n4_bias_correction:main"
+remove_dwi_gradients = "diciphr.scripts.remove_dwi_gradients:main"
+reorient_nifti = "diciphr.scripts.reorient_nifti:main"
+replace_labels = "diciphr.scripts.replace_labels:main"
+resample_image = "diciphr.scripts.resample_image:main"
+roi_stats = "diciphr.scripts.roi_stats:main"
+voxelwise_nonparametric_tests = "diciphr.scripts.voxelwise_nonparametric_tests:main"
+zscores = "diciphr.scripts.zscores:main"
+
+[project.urls]
+homepage = "https://github.com/DiCIPHR-Lab"
+source = "https://github.com/DiCIPHR-Lab/diciphr"
+download = "https://github.com/DiCIPHR-Lab/diciphr/#files"
+tracker = "https://github.com/DiCIPHR-Lab/diciphr/issues"

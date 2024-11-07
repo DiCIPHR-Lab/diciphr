@@ -1,0 +1,130 @@
+1	SPG_L	SUPERIOR PARIETAL LOBULE left
+2	CingG_L	CINGULATE GYRUS left
+3	SFG_L	SUPERIOR FRONTAL GYRUS left
+4	MFG_L	MIDDLE FRONTAL GYRUS left
+5	IFG_L	INFERIOR FRONTAL GYRUS left
+6	PrCG_L	PRECENTRAL GYRUS left
+7	PoCG_L	POSTCENTRAL GYRUS left
+8	AG_L	ANGULAR GYRUS left
+9	PrCu_L	PRE-CUNEUS left
+10	Cu_L	CUNEUS left
+11	LG_L	LINGUAL GYRUS left
+12	Fu_L	FUSIFORM GYRUS left
+13	PHG_L	PARAHIPPOCAMPAL GYRUS left
+14	SOG_L	SUPERIOR OCCIPITAL GYRUS left
+15	IOG_L	INFERIOR OCCIPITAL GYRUS left
+16	MOG_L	MIDDLE OCCIPITAL GYRUS left
+17	ENT_L	ENTORHINAL AREA left
+18	STG_L	SUPERIOR TEMPORAL GYRUS left
+19	ITG_L	INFERIOR TEMPORAL GYRUS left
+20	MTG_L	MIDDLE TEMPORAL GYRUS left
+21	LFOG_L	LATERAL FRONTO-ORBITAL GYRUS left
+22	MFOG_L	MIDDLE FRONTO-ORBITAL GYRUS left
+23	SMG_L	SUPRAMARGINAL GYRUS left
+24	RG_L	GYRUS RECTUS left
+25	Ins_L	INSULAR left
+26	Amyg_L	AMYGDALA left
+27	Hippo_L	HIPPOCAMPUS left
+28	cerebrellum_L	CEREBELLUM left
+29	CST_L	Corticospinal tract left
+30	ICP_L	Inferior cerebellar peduncle left
+31	ML_L	Medial lemniscus left
+32	SCP_L	Superior cerebellar peduncle left
+33	CP_L	Cerebral peduncle left
+34	ALIC_L	Anterior limb of internal capsule left
+35	PLIC_L	Posterior limb of internal capsule left
+36	PTR_L	Posterior thalamic radiation (include optic radiation) left
+37	ACR_L	Anterior corona radiata left
+38	SCR_L	Superior corona radiata left
+39	PCR_L	Posterior corona radiata left
+40	CGC_L	Cingulum (cingulate gyrus) left
+41	CGH_L	Cingulum (hippocampus) left
+42	Fx/ST_L	Fornix (cres) / Stria terminalis (can not be resolved with current resolution) left
+43	SLF_L	Superior longitudinal fasciculus left
+44	SFO_L	Superior fronto-occipital fasciculus (could be a part of anterior internal capsule) left
+45	IFO_L	Inferior fronto-occipital fasciculus left
+46	SS_L	Sagittal stratum (include inferior longitidinal fasciculus and inferior fronto-occipital fasciculus) left
+47	EC_L	External capsule left
+48	UNC_L	Uncinate fasciculus left
+49	PCT_L	Pontine crossing tract (a part of MCP) left
+50	MCP_L	Middle cerebellar peduncle left
+51	Fx_L	Fornix (column and body of fornix) left
+52	GCC_L	Genu of corpus callosum left
+53	BCC_L	Body of corpus callosum left
+54	SCC_L	Splenium of corpus callosum left
+55	RLIC_L	Retrolenticular part of internal capsule left
+56	RedNc_L	Red Nucleus left
+57	Snigra_R	Substancia Nigra left
+58	TAP_L	Tapatum left
+59	Caud_L	CAUDATE NUCLEUS left
+60	Put_L	PUTAMEN left
+61	Thal_L	THALAMUS left
+62	GP_L	GLOBUS PALLIDUS left
+63	Midbrain_L	MIDBRAIN left
+64	Pons_L	PONS left
+65	Medulla_L	MEDULLA left
+66	SPG_R	SUPERIOR PARIETAL LOBULE right
+67	CingG_R	CINGULATE GYRUS right
+68	SFG_R	SUPERIOR FRONTAL GYRUS right
+69	MFG_R	MIDDLE FRONTAL GYRUS right
+70	IFG_R	INFERIOR FRONTAL GYRUS right
+71	PrCG_R	PRECENTRAL GYRUS right
+72	PoCG_R	POSTCENTRAL GYRUS right
+73	AG_R	ANGULAR GYRUS right
+74	PrCu_R	PRE-CUNEUS right
+75	Cu_R	CUNEUS right
+76	LG_R	LINGUAL GYRUS right
+77	FuG_R	FUSIFORM GYRUS right
+78	PHG_R	PARAHIPPOCAMPAL GYRUS right
+79	SOG_R	SUPERIOR OCCIPITAL GYRUS right
+80	IOG_R	INFERIOR OCCIPITAL GYRUS right
+81	MOG_R	MIDDLE OCCIPITAL GYRUS right
+82	ENT_R	ENTORHINAL AREA right
+83	STG_R	SUPERIOR TEMPORAL GYRUS right
+84	ITG_R	INFERIOR TEMPORAL GYRUS right
+85	MTG_R	MIDDLE TEMPORAL GYRUS right
+86	LFOG_R	LATERAL FRONTO-ORBITAL GYRUS right
+87	MFOG_R	MIDDLE FRONTO-ORBITAL GYRUS right
+88	SMG_R	SUPRAMARGINAL GYRUS right
+89	RG_R	GYRUS RECTUS right
+90	Ins_R	INSULAR right
+91	Amyg_R	AMYGDALA right
+92	Hippo_R	HIPPOCAMPUS right
+93	cerebellum_R	CEREBELLUM right
+94	CST_R	Corticospinal tract right
+95	ICP_R	Inferior cerebellar peduncle right
+96	ML_R	Medial lemniscus right
+97	SCP_R	Superior cerebellar peduncle right
+98	CP_R	Cerebral peduncle right
+99	ALIC_R	Anterior limb of internal capsule right
+100	PLIC_R	Posterior limb of internal capsule right
+101	PTR_R	Posterior thalamic radiation (include optic radiation) right
+102	ACR_R	Anterior corona radiata right
+103	SCR_R	Superior corona radiata right
+104	PCR_R	Posterior corona radiata right
+105	CGC_R	Cingulum (cingulate gyrus) right
+106	CGH_R	Cingulum (hippocampus) right
+107	Fx/ST_R	Fornix (cres) / Stria terminalis (can not be resolved with current resolution) right
+108	SLF_R	Superior longitudinal fasciculus right
+109	SFO_R	Superior fronto-occipital fasciculus (could be a part of anterior internal capsule) right
+110	IFO_R	Inferior fronto-occipital fasciculus right
+111	SS_R	Sagittal stratum (include inferior longitidinal fasciculus and inferior fronto-occipital fasciculus) right
+112	EC_R	External capsule right
+113	UNC_R	Uncinate fasciculus right
+114	PCT_R	Pontine crossing tract (a part of MCP) right
+115	MCP_R	Middle cerebellar peduncle right
+116	Fx_R	Fornix (column and body of fornix) right
+117	GCC_R	Genu of corpus callosum right
+118	BCC_R	Body of corpus callosum right
+119	SCC_R	Splenium of corpus callosum right
+120	RLIC_R	Retrolenticular part of internal capsule right
+121	RedNc_R	Red Nucleus right
+122	Snigra_R	Substancia Nigra right
+123	TAP_R	Tapatum right
+124	Caud_R	CAUDATE NUCLEUS right
+125	Put_R	PUTAMEN right
+126	Thal_R	THALAMUS right
+127	GP_R	GLOBUS PALLIDUS right
+128	Midbrain_R	MIDBRAIN right
+129	Pons_R	PONS right
+130	Medulla_R	MEDULLA right
