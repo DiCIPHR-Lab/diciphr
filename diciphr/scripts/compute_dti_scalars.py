@@ -1,11 +1,10 @@
 #! /usr/bin/env python
 
-import os, sys, shutil, logging, traceback, argparse
-from ..utils import ( check_inputs, make_dir, 
-                protocol_logging, DiciphrException )
-from ..nifti_utils import ( read_nifti, write_nifti, 
-                strip_nifti_ext, get_nifti_ext )
-from ..diffusion import TensorScalarCalculator, is_tensor
+import os, sys, logging
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
+                DiciphrArgumentParser, DiciphrException )
+from diciphr.nifti_utils import read_nifti, write_nifti, strip_nifti_ext, get_nifti_ext
+from diciphr.diffusion import TensorScalarCalculator, is_tensor
 
 DESCRIPTION = '''
     Calculates diffusion scalar maps from a tensor image. 
@@ -14,7 +13,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='Compute_DTI_Scalars'
 
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-d', action='store', metavar='tensor_filename', dest='tensor_filename',
                     type=str, required=True,
                     help='path of the DTI tensor file'
@@ -53,14 +52,6 @@ def buildArgsParser():
     p.add_argument('--all', action='store_true', dest='calculate_all', 
                     required=False, default=False, 
                     help='calculate all the images')
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
@@ -68,7 +59,7 @@ def main(argv):
     args = parser.parse_args(argv)
     if args.output_dir is None:
         args.output_dir = os.path.realpath(os.path.dirname(args.tensor_filename))
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         check_inputs(args.tensor_filename, nifti=True)
         if not is_tensor(read_nifti(args.tensor_filename)):
@@ -100,9 +91,9 @@ def main(argv):
         if len(tasks) < 1:
             raise DiciphrException('Nothing to do!') 
         run_diffusion_scalar_calculator(args.tensor_filename, args.output_dir, tasks, mask_filename=args.mask_filename)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def run_diffusion_scalar_calculator(tensor_filename, output_dir, tasks, mask_filename=None):
     ''' 

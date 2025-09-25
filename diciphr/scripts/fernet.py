@@ -1,7 +1,7 @@
 #! /usr/bin/env python
-import os, sys, logging, traceback, argparse, time
-from ..fernet.pipeline import run_fernet 
-from ..utils import check_inputs, make_dir, protocol_logging
+import os, sys, logging
+from diciphr.fernet.pipeline import run_fernet 
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 
 DESCRIPTION = '''
 FERNET : FreewatER EstimatoR using iNtErpolated iniTialization
@@ -29,7 +29,7 @@ fernet_kwargs = {
 }
 
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-d','-k','--data',action='store',metavar='dwi',dest='dwi',
                     type=str, required=True, 
                     help='Input DWIs data file (Nifti or Analyze format).'
@@ -66,35 +66,15 @@ def buildArgsParser():
                     type=int, required=False, default=50,
                     help='Number of iterations of the gradient descent. Default is 50'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr. If a dir is provided will create a logfile'
-                    )
     return p
 
 def main(argv):    
     parser = buildArgsParser()
     args = parser.parse_args(argv)
-    output_dir = os.path.dirname(os.path.realpath(args.output))
-    make_dir(output_dir,recursive=True,pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
-    print('''
-    -------------------------------------------------------
-       ________) _____) _____    __     __) _____) ______) 
-      (, /     /       (, /   ) (, /|  /  /       (, /     
-        /___,  )__       /__ /    / | /   )__       /      
-     ) /     /        ) /   \_ ) /  |/  /        ) /       
-    (_/     (_____)  (_/      (_/   '  (_____)  (_/        
-
-     FreewatER EstimatoR using iNtErpolated iniTialization
-    -------------------------------------------------------
-
-''')
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
+        output_dir = os.path.dirname(os.path.realpath(args.output))
+        make_dir(output_dir,recursive=True,pass_if_exists=True)
         check_inputs(args.dwi, nifti=True)
         check_inputs(args.mask, nifti=True)
         check_inputs(args.mask, nifti=True)
@@ -107,9 +87,9 @@ def main(argv):
         run_fernet(args.dwi, args.bvals, args.bvecs, args.mask, args.output,
                     wm_roi=args.wm_roi, csf_roi=args.csf_roi, exclude_mask=args.exclude_mask, 
                     niters=args.niters, **fernet_kwargs)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 if __name__ == '__main__':
     main(sys.argv[1:])

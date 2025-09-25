@@ -1,11 +1,11 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
+import os, sys, logging
 import re 
 import numpy as np
 import pandas as pd 
 import pickle 
-from diciphr.utils import check_inputs, make_dir, protocol_logging
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.statistics.elementwise import elementwise_ols, results_to_dataframe
 from diciphr.statistics.utils import filter_cohort
 from diciphr.nifti_utils import replace_labels, read_nifti, write_nifti
@@ -18,7 +18,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='OLS_Analysis'
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-d','--data', action='store',metavar='data.csv',dest='datafile',
                     type=str, required=True, 
                     help='The ROIstats csv file'
@@ -70,15 +70,7 @@ def buildArgsParser():
     p.add_argument('--slicetype', action='store', metavar='str',dest='slicetype',
                     type=str, required=False, default='c', 
                     help='Slice type for screenshots. Options: a/c/s/axial/coronal/sagittal'
-                    )                
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
+                    ) 
     return p
 
     
@@ -261,55 +253,59 @@ def oscarOutputs(filenames, atlas_img, underlay_img, slicetype, outdir):
 def main(argv):
     parser = buildArgsParser()
     args = parser.parse_args(argv)
-    make_dir(args.outdir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug) 
-    check_inputs(args.cohortfile)
-    check_inputs(args.datafile)
-    if args.atlasfile:
-        check_inputs(args.atlasfile, nifti=True)
-        atlas_img = read_nifti(args.atlasfile)
-        if args.underlayfile:
-            check_inputs(args.underlayfile, nifti=True)
-            underlay_img = read_nifti(args.underlayfile)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
+    try:
+        make_dir(args.outdir, recursive=True, pass_if_exists=True)
+        check_inputs(args.cohortfile)
+        check_inputs(args.datafile)
+        if args.atlasfile:
+            check_inputs(args.atlasfile, nifti=True)
+            atlas_img = read_nifti(args.atlasfile)
+            if args.underlayfile:
+                check_inputs(args.underlayfile, nifti=True)
+                underlay_img = read_nifti(args.underlayfile)
+            else:
+                underlay_img = atlas_img 
+            if args.slicetype[0].lower() in ['a','c','s']:
+                slicetype = args.slicetype[0].lower()
+            else:
+                raise ValueError('Invalid option to --slicetype')
         else:
-            underlay_img = atlas_img 
-        if args.slicetype[0].lower() in ['a','c','s']:
-            slicetype = args.slicetype[0].lower()
-        else:
-            raise ValueError('Invalid option to --slicetype')
-    else:
-        atlas_img = None
-    treatments = dict([s.split('=') for s in args.treatments])
+            atlas_img = None
+        treatments = dict([s.split('=') for s in args.treatments])
 
-    logging.info('Read data from csv files')
-    data = pd.read_csv(args.datafile, index_col=0, na_values=['.',' ','','NA','NaN','nan'])
-    cohort = pd.read_csv(args.cohortfile, index_col=0, na_values=['.',' ','','NA','NaN','nan'])
-    if args.featuresfile:
-        features = [ a.strip() for a in open(args.featuresfile, 'r').readlines() ]
-    else:
-        features = [] 
+        logging.info('Read data from csv files')
+        data = pd.read_csv(args.datafile, index_col=0, na_values=['.',' ','','NA','NaN','nan'])
+        cohort = pd.read_csv(args.cohortfile, index_col=0, na_values=['.',' ','','NA','NaN','nan'])
+        if args.featuresfile:
+            features = [ a.strip() for a in open(args.featuresfile, 'r').readlines() ]
+        else:
+            features = [] 
+            
+        logging.info('Perform OLS analysis')
+        A = OLSAnalysis(data, cohort, args.formula, reduced_formula=args.reduced_formula, features=features,
+                        centralize=args.centralize, filters=args.filters, treatments=treatments, 
+                        atlas=atlas_img)
+        A.fit()
+        logging.info('Save results to csv')
+        if args.prefix:
+            A.save_dataframe(os.path.join(args.outdir, args.prefix+'.csv'))
+        else:
+            A.save_dataframe(os.path.join(args.outdir, 'ols_results.csv'))
+        A.save_cohort(os.path.join(args.outdir, 'cohort.csv'))
+        A.save_models(os.path.join(args.outdir, 'models.pkl'))
+        A.write_residual_outputs(os.path.join(args.outdir, 'residuals.csv')) 
         
-    logging.info('Perform OLS analysis')
-    A = OLSAnalysis(data, cohort, args.formula, reduced_formula=args.reduced_formula, features=features,
-                    centralize=args.centralize, filters=args.filters, treatments=treatments, 
-                    atlas=atlas_img)
-    A.fit()
-    logging.info('Save results to csv')
-    if args.prefix:
-        A.save_dataframe(os.path.join(args.outdir, args.prefix+'.csv'))
-    else:
-        A.save_dataframe(os.path.join(args.outdir, 'ols_results.csv'))
-    A.save_cohort(os.path.join(args.outdir, 'cohort.csv'))
-    A.save_models(os.path.join(args.outdir, 'models.pkl'))
-    A.write_residual_outputs(os.path.join(args.outdir, 'residuals.csv')) 
-    
-    if atlas_img is not None:
-        logging.info('Save Nifti results')
-        filenames = A.write_nifti_outputs(args.outdir)
+        if atlas_img is not None:
+            logging.info('Save Nifti results')
+            filenames = A.write_nifti_outputs(args.outdir)
+            
+            logging.info('Oscar Nifti screenshots')
+            oscarOutputs(filenames, atlas_img, underlay_img, slicetype, args.outdir)
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise                      
         
-        logging.info('Oscar Nifti screenshots')
-        oscarOutputs(filenames, atlas_img, underlay_img, slicetype, args.outdir)
-                            
 if __name__ == '__main__': 
     main(sys.argv[1:])
     

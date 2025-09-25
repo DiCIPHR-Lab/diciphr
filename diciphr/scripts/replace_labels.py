@@ -1,8 +1,8 @@
 #! /usr/bin/env python
-import os, sys, argparse, logging, traceback, shutil
-from ..utils import ( check_inputs, make_dir, protocol_logging,
-                    DiciphrException )
-from ..nifti_utils import read_nifti
+import os, sys, logging
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging,
+                    DiciphrArgumentParser, DiciphrException )
+from diciphr.nifti_utils import read_nifti
 import nibabel as nib
 import numpy as np
 import pandas as pd
@@ -14,7 +14,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='replace_labels'    
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-a',action='store',metavar='atlas',dest='atlas',
                     type=str, required=True, 
                     help='The atlas image in Nifti format.'
@@ -39,14 +39,6 @@ def buildArgsParser():
                     required=False, default=False, 
                     help='Replace the atlas with an ordered version of its labels.'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
@@ -54,7 +46,7 @@ def main(argv):
     args = parser.parse_args(argv)
     output_dir = os.path.dirname(os.path.realpath(args.output))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         check_inputs(args.atlas, nifti=True)
         atlas_im = read_nifti(args.atlas)
@@ -65,7 +57,7 @@ def main(argv):
             _lut = pd.read_csv(args.csv, header=None)
             _columns = [_lut.columns[0], _lut.columns[1]]
             _lut = _lut.loc[:,_columns]
-            _lut = _lut.get_values()
+            _lut = _lut.to_numpy()
             input_list = list(_lut[:,0])
             output_list= list(_lut[:,1])
         elif args.output_list:
@@ -82,7 +74,7 @@ def main(argv):
             input_list = list([int(a.strip()) for a in open(args.input_list,'r').readlines()])
             output_list = range(1,1+len(input_list))
         elif args.order:
-            _data = atlas_im.get_data()
+            _data = atlas_im.get_fdata()
             input_list = list(np.unique(_data[_data>0]))
             output_list = range(1,1+len(input_list))
         else:
@@ -91,9 +83,9 @@ def main(argv):
         output_im = replace_labels(atlas_im, input_list, output_list)
         logging.info('Save to output {}'.format(args.output))
         output_im.to_filename(args.output)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def replace_labels(atlas_im, input_list, output_list):
     ''' 
@@ -111,7 +103,7 @@ def replace_labels(atlas_im, input_list, output_list):
     -------
     None
     '''
-    atlas_data = atlas_im.get_data()
+    atlas_data = atlas_im.get_fdata()
     atlas_affine = atlas_im.affine
     atlas_header = nib.Nifti1Header()
     atlas_header.set_sform(atlas_affine)

@@ -1,18 +1,13 @@
-import os, shutil, logging
+import os, logging
 import numpy as np
-import nibabel as nib
-from nibabel.trackvis import read as read_trk
-from nibabel.trackvis import TrackvisFile
-from ..utils import ExecCommand, DiciphrException
-from ..nifti_utils import ( nifti_image, read_nifti, write_nifti, 
-                threshold_image )
-from ..diffusion import ( extract_b0, bet2_mask_nifti, 
-                estimate_tensor, calculate_lmax_from_bvecs )
+from diciphr.utils import ExecCommand, DiciphrException
+from diciphr.nifti_utils import read_nifti, write_nifti, nifti_image, threshold_image
+from diciphr.diffusion import calculate_lmax_from_bvecs
 from dipy.io.streamline import load_trk, save_trk 
-from dipy.tracking.life import transform_streamlines
-from dipy.tracking import utils
-from dipy.tracking.metrics import downsample
-from dipy.tracking.streamline import Streamlines
+from dipy.io.stateful_tractogram import StatefulTractogram
+from dipy.tracking.utils import density_map, target
+from dipy.tracking.streamline import length, values_from_volume
+import xml.etree.ElementTree as ET
 
 ##############################   
 # COMMON PREPROCESSING STEPS #
@@ -44,7 +39,7 @@ def get_lmax_from_bvecs(bvecs, lmax='auto'):
 def angle_threshold_to_curvature(angle_threshold, step_size):
     #http://www.nitrc.org/pipermail/mrtrix-discussion/2011-June/000230.html
     from math import sin
-    angle_threshold_radians = (angle_threshold * 3.141592653589793) / 180.0
+    angle_threshold_radians = (angle_threshold * np.pi) / 180.0
     curvature = float(step_size) / ( 2.0 * sin(angle_threshold_radians/2.0) )
     return curvature
     
@@ -60,424 +55,361 @@ def curvature_to_angle_threshold(curvature, step_size, radians=False):
 ###################################   
 ### COMMON POSTPROCESSING STEPS ###
 ###################################
+def track_info(trk_input):
+    if isinstance(trk_input, StatefulTractogram):
+        sft = trk_input
+    else:
+        sft = load_trk(trk_input, reference='same')
+    return {
+        'number streamlines': len(sft), 
+        'affine': sft.space_attributes[0], 
+        'dimensions': sft.space_attributes[1], 
+        'voxel sizes': sft.space_attributes[2], 
+        'orientation': sft.space_attributes[3], 
+    }
+    
+def track_stats(trk_input, nifti_scalars={}):
+    if isinstance(trk_input, StatefulTractogram):
+        sft = trk_input
+    else:
+        sft = load_trk(trk_input, reference='same')
+    streamline_lengths = length(sft.streamlines)
+    tdi_img = track_density_image(sft)
+    nvoxels = np.sum(tdi_img.get_fdata() > 0)
+    zooms = tdi_img.header.get_zooms()
+    volume = nvoxels * zooms[0] * zooms[1] * zooms[2] / 1000.0
+    # to do mean FA of streamlines or of voxels 
+    ret_dict = {
+        'number streamlines': len(sft), 
+        'min length': np.min(streamline_lengths),
+        'max length': np.max(streamline_lengths),
+        'mean length': np.mean(streamline_lengths),
+        'SD length' : np.std(streamline_lengths), 
+        'number voxels': nvoxels, 
+        'volume' : volume
+    }
+    if nifti_scalars:
+        sft = StatefulTractogram.from_sft(sft.streamlines, sft)
+        sft.to_rasmm()
+    for scalar_name, scalar_img in nifti_scalars.items():
+        scalar_values = values_from_volume(scalar_img.get_fdata(), sft.streamlines, affine=scalar_img.affine)
+        scalar_values = np.concatenate(scalar_values)
+        scalar_values = scalar_values[np.isfinite(scalar_values)]
+        ret_dict['min '+scalar_name] = np.min(scalar_values)
+        ret_dict['max '+scalar_name] = np.max(scalar_values)
+        ret_dict['mean '+scalar_name] = np.mean(scalar_values)
+        ret_dict['SD '+scalar_name] = np.std(scalar_values)
+    return ret_dict
+        
+    
 def spline_filter(input_trk_file, output_trk_file, step_size=0.2):
     logging.debug('diciphr.tractography.track_utils.spline_filter')
-    cmd = [ 'spline_filter', input_trk_file, step_size, output_trk_file]
-    returncode, stdout, stderr = ExecCommand(cmd).run()
+    cmd = ['spline_filter', input_trk_file, step_size, output_trk_file]
+    ExecCommand(cmd).run()
     return output_trk_file
     
-def filter_tracks_include(input_trk_file, include_mask_file, output_trk_file):
-    logging.debug('diciphr.tractography.track_utils.filter_tracks_include')
-    include_mask_data = (nib.load(include_mask_file).get_data() > 0)
-    logging.debug('nibabel.trackvis.read')
-    trks, hdr = read_trk(input_trk_file, points_space='voxel')
-    trks_round = [ (a[0].astype(np.int16), a[1], a[2]) for a in trks]
-    trks_keep = []
-    N = len(trks)
-    logging.debug("Begin filter tracks include")
-    for idx, tup in enumerate(trks_round):
-        logging.debug("Inspecting track {0} out of {1}".format(idx+1, N))
-        trk_arr = tup[0]
-        for coord in trk_arr:
-            if include_mask_data[coord[0],coord[1],coord[2]]:
-                trks_keep.append(trks[idx])
-                break
-    logging.debug('nibabel.trackvis.TrackvisFile')
-    hdr_keep= hdr.copy()
-    hdr_keep['n_count'] = len(trks_keep) 
-    T = TrackvisFile(trks_keep, hdr_keep, points_space='voxel')
-    logging.debug('Write tracks to {}'.format(output_trk_file))
-    T.to_file(output_trk_file)
-    return output_trk_file
-    
-def filter_tracks_truncate(input_trk_file, truncate_mask_file, include_mask_file, output_trk_file):
-    logging.debug('diciphr.tractography.track_utils.filter_tracks_truncate')
-    include_mask_data = (nib.load(include_mask_file).get_data() > 0)
-    truncate_mask_data = (nib.load(truncate_mask_file).get_data() > 0)
-    logging.debug('nibabel.trackvis.read')
-    trks, hdr = read_trk(input_trk_file, points_space='voxel')
-    trks_keep = []
-    _N = len(trks)
-    streamlines = [a[0] for a in trks]
-    _dtype = streamlines[0].dtype
-    for idx, streamline in enumerate(streamlines):
-        logging.debug("Inspecting track {0} out of {1}".format(idx+1, _N))
-        M = len(streamline)
-        streamline_keep=None
-        streamline_rev_keep=None
-        for coord in streamline:
-            coord_int = coord.astype(np.int16)
-            if streamline_keep is None:
-                streamline_keep = coord[np.newaxis,:]
-            else:
-                streamline_keep = np.append(streamline_keep, coord[np.newaxis,:], axis=0)
-            if truncate_mask_data[coord_int[0],coord_int[1],coord_int[2]]:
-                break
-        if len(streamline_keep) == len(streamline):
-            # we never touched the stop mask
-            trks_keep.append(streamline)
-            continue
-        for coord in streamline[::-1]:
-            coord_int = coord.astype(np.int16)
-            if streamline_rev_keep is None:
-                streamline_rev_keep = coord[np.newaxis,:]
-            else:
-                streamline_rev_keep = np.append(streamline_rev_keep, coord[np.newaxis,:], axis=0)
-            if truncate_mask_data[coord_int[0], coord_int[1], coord_int[2]]:
-                break
-        streamline_rev_keep = streamline_rev_keep[::-1]
-        trks_keep.append(streamline_keep)
-        trks_keep.append(streamline_rev_keep)
-    trks = [(trk, None, None) for trk in trks_keep]
-    #filter through include ROI
-    trks_round = [ (a[0].astype(np.int16), a[1], a[2]) for a in trks]
-    trks_keep = []
-    _N = len(trks)
-    for idx, tup in enumerate(trks_round):
-        logging.debug("Inspecting track {0} out of {1}".format(idx+1, _N))
-        trk_arr = tup[0]
-        for coord in trk_arr:
-            if include_mask_data[coord[0],coord[1],coord[2]]:
-                trks_keep.append(trks[idx])
-                break
-    logging.debug('nibabel.trackvis.TrackvisFile')
-    T = TrackvisFile(trks_keep, hdr, points_space='voxel')
-    logging.debug('Write tracks to {}'.format(output_trk_file))
-    T.to_file(output_trk_file)
-    return output_trk_file
-    
-def filter_tracks_exclude(input_trk_file, exclude_mask_file, output_trk_file):
-    logging.debug('diciphr.tractography.track_utils.filter_tracks_exclude')
-    exclude_mask_data = (nib.load(exclude_mask_file).get_data() > 0)
-    logging.debug('nibabel.trackvis.read')
-    trks, hdr = read_trk(input_trk_file, points_space='voxel')
-    trks_round = [ (a[0].astype(np.int16), a[1], a[2]) for a in trks]
-    trks_keep = []
-    N = len(trks)
-    logging.debug("Begin filter tracks exclude")
-    for idx, tup in enumerate(trks_round):
-        logging.debug("Inspecting track {0} out of {1}".format(idx+1, N))
-        trk_arr = tup[0]
-        _keep = True
-        for coord in trk_arr:
-            if exclude_mask_data[coord[0],coord[1],coord[2]]:
-                _keep = False
-            if not _keep:
-                break
-        if _keep:
-            trks_keep.append(trks[idx])
-    logging.debug('nibabel.trackvis.TrackvisFile')
-    hdr_keep= hdr.copy()
-    hdr_keep['n_count'] = len(trks_keep) 
-    T = TrackvisFile(trks_keep, hdr_keep, points_space='voxel')
-    logging.debug('Write tracks to {}'.format(output_trk_file))
-    T.to_file(output_trk_file)
-    return output_trk_file
-    
-def track_fa_ratio(input_trk_file, fa_im):
-    fa_data = fa_im.get_data()
-    trks, hdr = read_trk(input_trk_file, points_space='voxel')
-    trks_round = [ (a[0].astype(np.int16), a[1], a[2]) for a in trks]
-    N = len(trks)
-    global_min_fa = 1.0 
-    fiber_mins_fa = np.ones((N,),dtype=float)
-    for idx, tup in enumerate(trks_round):
-        logging.debug("Inspecting track {0} out of {1}".format(idx+1, N))
-        trk_arr = tup[0]
-        fiber_voxel_data = np.zeros(fa_im.shape, dtype=int)
-        for coord in trk_arr:
-            fiber_voxel_data[coord[0],coord[1],coord[2]]=1
-        fa_vec = fa_data[fiber_voxel_data > 0]
-        fa_min = np.min(fa_vec)
-        if fa_min < global_min_fa:
-            global_min_fa = fa_min
-        fiber_mins_fa[idx] = fa_min
-    maxmin_fa = np.max(fiber_mins_fa)
-    fa_ratio = maxmin_fa / global_min_fa
-    logging.debug("Global Min FA: {}".format(global_min_fa))
-    logging.debug("Max of min FA: {}".format(maxmin_fa))
-    logging.debug("     FA ratio: {}".format(fa_ratio))
-    return fa_ratio
+def filter_tracks_include(input_trk_file, output_trk_file, *include_mask_files):
+    """
+    Filters streamlines from a .trk file that pass through a binary inclusion mask using DIPY's `target`.
 
-def track_density_image(streamlines, ref_im):
-    tdi = utils.density_map(streamlines, ref_im.affine, ref_im.shape)    
-    tdi_im = nifti_image(np.asarray(tdi, dtype=np.uint8), ref_im.affine)
-    return tdi_im
-        
-def downsample_tracks(streamlines, ref_im, downsample_percent=50, num_iters=15, return_mean_densities=False):
-    '''
-    Implementation of The fiber-density-coreset for redundancy reduction in huge fiber-sets
-    Guy Alexandronia, Gali Zimmerman Morenob, Nir Sochenc, Hayit Greenspan
-    Neuroimage
-    DOI: 10.1016/j.neuroimage.2016.11.027
-    '''
-    N = len(streamlines)
-    m = int(float(downsample_percent)/100*N)
-    logging.info('The fiber-density-coreset for redundancy reduction in huge fiber-sets, Alexandronia et al.')
-    logging.info('TDI image of streamlines')
-    tdi_im = track_density_image(streamlines, ref_im)
-    tdi_data = tdi_im.get_data().astype(float)
-    streamlines_voxels = Streamlines(transform_streamlines(streamlines, np.linalg.inv(ref_im.affine)))
-    # original paper subsampled each streamline to 20 coordinates. 
-    # streamlines_downsampled = Streamlines([downsample(s, 20) for s in streamlines])
-    visitation_map = (tdi_data > 0)
-    nvoxels = float(np.sum(visitation_map))
-    inverse_tdi_data = np.zeros(tdi_data.shape)
-    inverse_tdi_data[visitation_map] = 1 / tdi_data[visitation_map]
-    logging.info('Calculate mean inverse track density for each streamline')
-    streamline_means = np.asarray([
-            np.mean(np.take(inverse_tdi_data, np.ravel_multi_index(s.astype(int).T, tdi_data.shape))) 
-            for s in streamlines_voxels
-    ])
-    # normalize to form pdf 
-    streamline_means = streamline_means / np.sum(streamline_means)
-    best_overlap = []
-    def hamming_distance(sample_data):
-        return np.sum(sample_data[visitation_map] > 0)/nvoxels
-    best_h = 1
-    best_streamlines = None
-    logging.info('Randomly subsample {} streamlines {} times at {} % to downsample to {} streamlines'.format(
-            N, num_iters, downsample_percent, m
-    ))
-    for iter in range(num_iters):
-        logging.info('Iteration {} out of {}'.format(iter+1, num_iters))
-        c = Streamlines(np.random.choice(streamlines, (m,), p=streamline_means))
-        sample_data = track_density_image(c, ref_im).get_data() 
-        h = hamming_distance(sample_data)
-        logging.debug('Hamming distance {} best {}'.format(h, best_h))
-        if h <= best_h:
-            best_streamlines = c
-            best_h = h
-    if return_mean_densities:
-        return best_streamlines, streamline_means
+    Parameters:
+    - input_trk_file: str, path to input .trk file
+    - include_mask_file: str, path to binary inclusion mask (.nii or .nii.gz)
+    - output_trk_file: str, path to save the filtered .trk file
+    """
+    logging.debug('Loading inclusion masks')
+    include_masks = []
+    for incl_nii in include_mask_files:
+        img = read_nifti(incl_nii)
+        include_masks.append(img.get_fdata()>0)        
+    logging.debug('Loading tractogram')
+    sft = load_trk(input_trk_file, reference='same')
+    filtered_streamlines = sft.streamlines 
+    for include_mask in include_masks:
+        logging.debug('Filtering streamlines using target with include=True')
+        print(sft.affine)
+        filtered_streamlines = target(filtered_streamlines, sft.affine, include_mask, include=True)
+    filtered_sft = StatefulTractogram.from_sft(
+        filtered_streamlines,
+        sft
+    )
+    save_trk(filtered_sft, output_trk_file)
+    logging.debug(f'Filtered tractogram saved to {output_trk_file}')
+    return output_trk_file
+    
+def filter_tracks_exclude(input_trk_file, output_trk_file, *exclude_mask_files):
+    """
+    Filters streamlines from a .trk file that do not pass through a binary inclusion mask using DIPY's `target`.
+
+    Parameters:
+    - input_trk_file: str, path to input .trk file
+    - include_mask_file: str, path to binary inclusion mask (.nii or .nii.gz)
+    - output_trk_file: str, path to save the filtered .trk file
+    """
+    logging.debug('Loading inclusion masks')
+    exclude_masks = []
+    for excl_nii in exclude_mask_files:
+        img = read_nifti(excl_nii)
+        exclude_masks.append(img.get_fdata()>0)        
+    logging.debug('Loading tractogram')
+    sft = load_trk(input_trk_file, reference='same')
+    filtered_streamlines = sft.streamlines 
+    for exclude_mask in exclude_masks:
+        logging.debug('Filtering streamlines using target with include=True')
+        print(sft.affine)
+        filtered_streamlines = target(filtered_streamlines, sft.affine, exclude_mask, include=False)
+
+    filtered_sft = StatefulTractogram.from_sft(
+        filtered_streamlines,
+        sft
+    )
+    save_trk(filtered_sft, output_trk_file)
+    logging.debug(f'Filtered tractogram saved to {output_trk_file}')
+    return output_trk_file
+
+def track_density_image(trk_input, ref_img=None, output_filename=None):
+    if isinstance(trk_input, StatefulTractogram):
+        sft = trk_input
     else:
-        return best_streamlines         
-              
-### CAMINO : QUTE , RBF etc. ###
-#  This class provides an interface to read and manipulate camino fibers
-class caminoFibers:
-    ## @brief Constructor
-    #
-    #  Either initialize an empty fiber array or read fiber coordinates from a file/array
-    #
-    #  @param fiberFile is the path for .Bfloat file. Read fibre coordinates from the file if provided
-    #  @param F is an array with pre-read coordinates. Directly copy coordinates form the array if provided
-    def __init__(self, fiberFile="", F=None):
-        if fiberFile != "":
-            self.readFibersFromFile(fiberFile)
-        elif F != None:
-            self.F = F[:]
-            self.numFibers = len(F)
+        sft = load_trk(trk_input, reference=ref_img if ref_img else 'same')
+    sft_copy = StatefulTractogram.from_sft(sft.streamlines, sft, data_per_point=sft.data_per_point, data_per_streamline=sft.data_per_streamline)
+    sft_copy.to_rasmm()
+    if ref_img is None:
+        ref_affine = sft.space_attributes[0]
+        ref_shape = sft.space_attributes[1]
+    else:
+        ref_affine = ref_img.affine
+        ref_shape = ref_img.shape
+    tdi = density_map(sft_copy.streamlines, ref_affine, ref_shape)    
+    tdi_im = nifti_image(np.asarray(tdi, dtype=np.uint8), ref_affine)
+    if output_filename is not None:
+        write_nifti(output_filename, tdi_im)
+    return tdi_im
+
+def downsample_tracks_fdc(trk_input, output_trk_filename=None, ref_filename=None, downsample_percent=50, num_iters=15, return_mean_densities=False):
+    '''
+    Downsamples streamlines from a .trk file using the fiber-density-coreset method.
+    Based on: Alexandronia et al., Neuroimage, DOI: 10.1016/j.neuroimage.2016.11.027
+
+    Parameters:
+    - trk_input: path to the .trk file or StatefulTractogram instance
+    - ref_filename: optional path to a NIfTI file to use as reference image
+    - downsample_percent: percentage of streamlines to retain
+    - num_iters: number of random subsampling iterations
+    - return_mean_densities: whether to return streamline density weights
+    '''
+    if ref_filename is not None:
+        logging.info(f'Reference nifti: {ref_filename}')
+        ref_img = read_nifti(ref_filename)
+    else:
+        ref_img = None
+    if isinstance(trk_input, StatefulTractogram):
+        sft = trk_input
+    else:
+        logging.info(f'Load trk file {trk_input}')
+        sft = load_trk(trk_input, reference=ref_img if ref_img else 'same')     
+    
+    #sft.to_rasmm()
+    N = len(sft.streamlines)
+    m = int(float(downsample_percent) / 100 * N)
+
+    logging.info('Computing TDI image')
+    tdi_data = track_density_image(sft, ref_img=ref_img).get_fdata()
+
+    visitation_map = tdi_data > 0
+    nvoxels = float(np.sum(visitation_map))
+
+    inverse_tdi_data = np.zeros_like(tdi_data)
+    inverse_tdi_data[visitation_map] = 1 / tdi_data[visitation_map]
+
+    logging.info('Calculating mean inverse track density for each streamline')
+    sft_vox_copy = StatefulTractogram.from_sft(sft.streamlines, sft)
+    sft_vox_copy.to_vox()
+    sft_vox_copy.to_center()
+    streamline_means = np.asarray([
+        np.mean(np.take(inverse_tdi_data, np.ravel_multi_index(s.astype(np.int32).T, tdi_data.shape)))
+        for s in sft_vox_copy.streamlines
+    ])
+    streamline_means /= np.sum(streamline_means)
+
+    best_h = 1
+    best_sft = None
+    logging.info(f'Subsampling {N} streamlines {num_iters} times at {downsample_percent}% to get {m} streamlines')
+    for iter in range(num_iters):
+        logging.debug(f'Iteration {iter + 1} of {num_iters}')
+        sampled_indices = np.random.choice(np.arange(N), size=m, replace=False, p=streamline_means)
+        sampled_sft = sft[sampled_indices]
+        sample_data = track_density_image(sampled_sft, ref_img=ref_img).get_fdata()
+        # Hamming distance 
+        h = np.sum(sample_data[visitation_map] > 0) / nvoxels
+        logging.debug(f'Hamming distance {h}, best so far {best_h}')
+        if h <= best_h:
+            best_sft = sampled_sft
+            best_h = h
+    
+    # save results
+    if output_trk_filename is not None:
+        logging.info(f"Save results to {output_trk_filename}")
+        save_trk(best_sft, output_trk_filename)
+    
+    if return_mean_densities:
+        return best_sft, streamline_means
+    else:
+        return best_sft
+
+###################################   
+###  TRACKVIS MERGE AND SCENE   ###
+###################################
+def merge_tracks(input_trks, output_trk_file=None):
+    """
+    Merges multiple .trk files into one, assigning a 'DataSetID' to each streamline
+    based on the order of input files.
+
+    Parameters:
+    - input_trk_files: list of str, paths to input .trk files
+    - output_trk_file: str, path to save the merged .trk file
+    """
+    all_streamlines = []
+    all_dataset_ids = [] 
+    ref_sft = None
+    for dataset_id, trk_input in enumerate(input_trks):
+        if isinstance(trk_input, StatefulTractogram):
+            sft = trk_input
         else:
-            self.F = list()
-            self.numFibers = 0
+            sft = load_trk(trk_input, reference='same')
+        if ref_sft is None:
+            ref_sft = sft 
+        streamlines = list(sft.streamlines)
+        data_per_streamline = [dataset_id] * len(streamlines)
+        all_streamlines.extend(streamlines)
+        all_dataset_ids.extend(data_per_streamline)
+    data_per_streamline = {"DataSetID": np.asarray(all_dataset_ids, dtype=np.float32)[:,np.newaxis]}
+    all_streamlines  = np.asarray(all_streamlines)
+    merged_sft = StatefulTractogram.from_sft(
+            all_streamlines, 
+            ref_sft,
+            data_per_streamline = data_per_streamline
+    )
+    if output_trk_file:
+        save_trk(merged_sft, output_trk_file)
+    return merged_sft    
 
-    ## @brief Read fiber coordinates from the provided file
-    #
-    #  @param fiberFile is the path for .Bfloat file.
-    def readFibersFromFile(self, fiberFile):
-        import struct
+_default_colors = [
+    (255,0,0),
+    (0,255,0),
+    (0,0,255),
+    (0,255,255),
+    (255,0,255),
+    (255,255,0),
+    (255,165,0),
+    (191,255,0),
+    (64,224,208),
+    (255,105,180),
+    (138,43,226),
+    (127,255,0),
+    (0,191,255),
+    (220,20,60),
+    (0,255,127),
+    (255,215,0),
+]
 
-        self.F = list()
+def create_scene(trk_path, output_path, underlay_images=[], roi_images=[], roi_names=[], roi_colors=[], roi_opacities=[],
+                 track_group_names=[], track_colors=[], solid_colors=False, render="Line"):
+    if not track_colors:
+        track_colors = _default_colors
+    if not roi_colors:
+        roi_colors = _default_colors
+    trk = load_trk(trk_path, reference='same')
+    data_per_streamline = trk.data_per_streamline
+    affine, dims, pixdims, orn = trk.space_attributes
+    half_dims = [str(int(d/2)) for d in dims]
+    scene = ET.Element("Scene", version="2.2")
+    ET.SubElement(scene, "Dimension", x=str(dims[0]), y=str(dims[1]), z=str(dims[2]))
+    ET.SubElement(scene, "VoxelSize", x=str(pixdims[0]), y=str(pixdims[1]), z=str(pixdims[2]))
+    ET.SubElement(scene, "VoxelOrder", current=orn, original=orn)
+    ET.SubElement(scene, "LengthUnit", value="1")
+    ET.SubElement(scene, "TrackFile", path=trk_path, rpath=os.path.basename(trk_path))
 
-        f = open(fiberFile, "rb")
-        while 1:
-            # read number of points for the tract
-            byte = f.read(4)
-            if byte == '' :
-                break
-            numPoints = int(struct.unpack('>f', byte)[0])
-            byte = f.read(4)
+    if underlay_images:
+        image = ET.SubElement(scene, "Image")
+        ET.SubElement(image, "SliceX", number=half_dims[0], visibility="1")
+        ET.SubElement(image, "SliceY", number=half_dims[1], visibility="1")
+        ET.SubElement(image, "SliceZ", number=half_dims[2], visibility="1")
+        ET.SubElement(image, "Interpolate", value="0")
+        ET.SubElement(image, "Opacity", value="0.5")
+        for underlay_image in underlay_images:
+            _dat = read_nifti(underlay_image).get_fdata()
+            _perc99 = np.percentile(_dat[_dat!=0], 99)
+            ET.SubElement(image, "Map", path=underlay_image, rpath=os.path.basename(underlay_image),
+                      rpath2=os.path.basename(underlay_image), window=f"{_perc99:0.6f}", level=f"{(_perc99/2):0.6f}")
+        ET.SubElement(image, "CurrentIndex", value="0")
 
-            # read the seedpoint
-            seedPoint = int(struct.unpack('>f', byte)[0])
+    if roi_images:
+        rois = ET.SubElement(scene, "ROIs")
+        for i, roi_path in enumerate(roi_images):
+            try:
+                roiname = roi_names[i]
+            except IndexError:
+                roiname = os.path.basename(roi_path)
+            try:
+                opacity = str(float(roi_opacities[i]))
+            except IndexError:
+                opacity = str(float(1))
+            roi = ET.SubElement(rois, "ROI", name=roiname, type="FromImage", id=str(1000+i))
+            ET.SubElement(roi, "ImageFile", path=roi_path, rpath=os.path.basename(roi_path),
+                          rpath2=os.path.basename(roi_path), low="0.25", high="1")
+            ET.SubElement(roi, "Edited", value="0")
+            color1, color2, color3 = roi_colors[i%len(roi_colors)]
+            ET.SubElement(roi, "Color", r=str(color1), g=str(color2), b=str(color3))
+            ET.SubElement(roi, "Opacity", value=opacity)
+            ET.SubElement(roi, "Visibility", value="1")
+        ET.SubElement(rois, "CurrentIndex", value="0")
 
-            #read physical coordinates
-            coords = np.zeros([numPoints, 3])
-            for i in range(0, numPoints):
-                byte = f.read(4)
-                x = float(struct.unpack('>f', byte)[0])
-                byte = f.read(4)
-                y = float(struct.unpack('>f', byte)[0])
-                byte = f.read(4)
-                z = float(struct.unpack('>f', byte)[0])
+    tracks = ET.SubElement(scene, "Tracks")
+    
+    render_dict = {
+        "lin":"0",
+        "tub":"1",
+        "sha":"2",
+        "end":"3"            
+            }
+    
+    if data_per_streamline:
+        unique_props = list(np.unique(data_per_streamline[list(data_per_streamline.keys())[0]]))
+    else:
+        unique_props = [0.0]
+    for prop in unique_props:
+        i = int(prop)
+        try:
+            trackname = track_group_names[i]
+        except IndexError:
+            trackname = f"Track {i+1:03d}"
+        track = ET.SubElement(tracks, "Track", name=trackname, id=str(2000+i))
+        ET.SubElement(track, "Length", low="0", high="1e+08")
+        ET.SubElement(track, "FileIDs", value="0")
+        ET.SubElement(track, "Property", id="0", low=str(prop), high=str(prop))
+        ET.SubElement(track, "Slice", plane="0", number=half_dims[0], thickness="1", testmode="0", enable="0", visible="1", operator="and", id=str(20000+3*i))
+        ET.SubElement(track, "Slice", plane="1", number=half_dims[1], thickness="1", testmode="0", enable="0", visible="1", operator="and", id=str(20000+3*i+1))
+        ET.SubElement(track, "Slice", plane="2", number=half_dims[2], thickness="1", testmode="0", enable="0", visible="1", operator="and", id=str(20000+3*i+2))
+        ET.SubElement(track, "Skip", value="0", enable="0")
+        ET.SubElement(track, "ShadingMode", value=render_dict[render.lower()[:3]])
+        ET.SubElement(track, "Radius", value="0.05")
+        ET.SubElement(track, "NumberOfSides", value="5")
+        ET.SubElement(track, "ColorCode", value="1" if solid_colors else "0")
+        ET.SubElement(track, "OdfColorCode", value="0")
+        color1, color2, color3 = track_colors[i%len(track_colors)]
+        ET.SubElement(track, "SolidColor", r=str(color1), g=str(color2), b=str(color3))
+        ET.SubElement(track, "ScalarIndex", value="0")
+        gradient = ET.SubElement(track, "ScalarGradient")
+        ET.SubElement(gradient, "ColorStop", stop="0", r="1", g="1", b="0")
+        ET.SubElement(gradient, "ColorStop", stop="1", r="1", g="0", b="0")
+        ET.SubElement(track, "Saturation", value="1")
+        ET.SubElement(track, "HelixPoint", x=half_dims[0], y=half_dims[1], z=half_dims[2])
+        ET.SubElement(track, "HelixVector", x="1", y="0", z="0")
+        ET.SubElement(track, "HelixAxis", visibility="1")
+        ET.SubElement(track, "Visibility", value="1")
+    ET.SubElement(tracks, "CurrentIndex", value="0")
 
-                coords[i, :] = [x,y,z]
-            self.F.append(coords)
-
-        self.numFibers = len(self.F)
-        f.close()
-
-    ## @brief Generate connectivity signatures for fibers
-    #
-    #  Coordinate system for fibers and images of streamline counts muct be same. User must be sure of this since
-    #  there is no way to get what coordinate system was used for fibers from .Bfloat file.
-    #
-    #  @param fiberFile is the path for .Bfloat file.
-    #  @param Images is the array including images of streamline counts. Each image corresponds to a single target region.
-    #  @param header is the nifti image to extract coordinate system of the fibers
-    #  @param outputFile is the csv file for the output
-    def generateConnectivitySig(self, fiberFile, Images, header, outputFile):
-        from scipy import ndimage
-        #import nifti as nif
-        from nibabel import load as load_nifti
-        import csv
-        import struct
-
-        numGM = len(Images)
-
-        featureFile = open(outputFile, "w")
-        writer = csv.writer(featureFile, delimiter=',')
-
-        # mappings for coordinate transformation
-        #niftiImage = nif.NiftiImage(header)
-        #mV2P = niftiImage.header['sform'][0:3, 0:3]
-        #mP2V = np.linalg.inv(mV2P)
-        #origin = niftiImage.header['sform'][0:3, 3].reshape([3, 1])
-
-        niftiImage = load_nifti(header)
-        mV2P = niftiImage.affine[0:3,0:3]
-        mP2V = np.linalg.inv(mV2P)
-        origin = niftiImage.affine[0:3, 3].reshape([3, 1])
-
-        f = open(fiberFile, "rb")
-        #counter = 0
-        while 1:
-            # read number of points for the tract
-            byte = f.read(4)
-            if byte == '' :
-                break
-            numPoints = int(struct.unpack('>f', byte)[0])
-            byte = f.read(4)
-
-            # read the seedpoint
-            seedPoint = int(struct.unpack('>f', byte)[0])
-
-            #read physical coordinates
-            fiberXYZ = np.zeros([numPoints, 3])
-            for i in range(0, numPoints):
-                byte = f.read(4)
-                x = float(struct.unpack('>f', byte)[0])
-                byte = f.read(4)
-                y = float(struct.unpack('>f', byte)[0])
-                byte = f.read(4)
-                z = float(struct.unpack('>f', byte)[0])
-
-                fiberXYZ[i, :] = [x,y,z]
-
-            #convert to voxel space
-            fiberIJK = np.ceil(np.dot(mP2V, fiberXYZ.T - np.tile(origin, [1, numPoints])).T).astype(int)
-
-            #get unique coordinates
-            _fiberIJK = [fiberIJK[0, :]]
-            for vox in range(1, fiberIJK.shape[0]):
-                if np.sum(_fiberIJK[-1]==fiberIJK[vox, :]) < 3:
-                    _fiberIJK.append(fiberIJK[vox, :])
-            fiberIJK = np.array(_fiberIJK)
-
-            #fill frequencies from Images
-            numVox = fiberIJK.shape[0]
-            Pf = np.zeros((numVox, numGM))
-            for v in range(0, numVox):
-                for r in range(0, numGM):
-                    #beware that nifti package switches x and z coordinates
-                    #nibabel package does not switch x and z -- drew
-                    corX = min(fiberIJK[v,0], Images[r].shape[0]-1)  #min(fiberIJK[v,2],
-                    corY = min(fiberIJK[v,1], Images[r].shape[1]-1)
-                    corZ = min(fiberIJK[v,2], Images[r].shape[2]-1)  #min(fiberIJK[v,0],
-                    Pf[v, r] = Images[r][corX,corY,corZ]
-
-            #apply smoothing
-            Lf = ndimage.gaussian_filter(Pf, sigma=[5,0])
-
-            #weighted average of voxels
-            arclength = Lf.shape[0]
-            ss = np.arange(0,arclength) / float(arclength-1. + 1e-16)
-            wmin = 0.01
-            ss[0] = 1e-2; ss[arclength-1] = 1.-(1e-2)
-            ww0 = (ss**(-0.5))*((1-ss)**(-0.5)) + wmin
-            ww = ww0 / np.sum(ww0)
-            F = np.sum(Lf*ww.reshape((len(ww),1)), axis=0)
-
-            #convert to integer and store
-            fV = F.astype('int')
-            writer.writerow(fV)
-
-            #counter += 1
-            #print("%d fibers were processed"%(counter))
-
-        f.close()
-        featureFile.close()
-
-
-## @brief Extracts selected tratcs from a set of fibers
-#
-#  @param bfloatFile is the path for .Bfloat file.
-#  @param clusterIDs is the list including cluster ids of fibers.
-#  @param selectedTracts is the list of selected cluster ids for each tract.
-#  @param outputFileNames is the list of names output tract files.
-def extractTracts(bfloatFile, clusterIDs, selectedTracts, outputFileNames):
-    import struct
-
-    #output files
-    tractFiles = []
-    for fileName in outputFileNames:
-        _f = open(fileName, "wb")
-        tractFiles.append(_f)
-
-    #read the .Bfloat file and write the fibers that are selected
-    f = open(bfloatFile, "rb")
-    for fib in range(len(clusterIDs)):
-        # read number of points for the tract
-        byte = f.read(4)
-        if byte == '' :
-            print("File %s ends unexpectedly" % (bfloatFile))
-            break
-        numPoints = int(struct.unpack('>f', byte)[0])
-        byte = f.read(4)
-
-        # read the seedpoint
-        seedPoint = int(struct.unpack('>f', byte)[0])
-
-        #read physical coordinates
-        coords = np.zeros([numPoints, 3])
-        for i in range(0, numPoints):
-            byte = f.read(4)
-            x = float(struct.unpack('>f', byte)[0])
-            byte = f.read(4)
-            y = float(struct.unpack('>f', byte)[0])
-            byte = f.read(4)
-            z = float(struct.unpack('>f', byte)[0])
-            coords[i, :] = [x,y,z]
-
-        #check if we want this fiber and then write it to the right file
-        for tr in range(len(selectedTracts)):
-            if clusterIDs[fib] in selectedTracts[tr]:
-                _f = tractFiles[tr]
-
-                s = struct.pack('>f', numPoints)
-                _f.write(s)
-                s = struct.pack('>f', seedPoint)
-                _f.write(s)
-                for p in range(0, numPoints):
-                    for x in range(0, 3):
-                        s = struct.pack('>f', coords[p, x])
-                        _f.write(s)
-                break
-
-    #close input and output files
-    f.close()
-    for i in range(len(outputFileNames)):
-        tractFiles[i].close()
-
-
-def convertP2V(fiberXYZ, mP2V, origin, imageSize):
-    fiberIJK = np.floor(np.dot(mP2V, fiberXYZ.T - origin).T).astype(int)
-    fiberIJK[fiberIJK[:,0]>=imageSize[0], 0] = imageSize[0]-1
-    fiberIJK[fiberIJK[:,1]>=imageSize[1], 1] = imageSize[1]-1
-    fiberIJK[fiberIJK[:,2]>=imageSize[2], 2] = imageSize[2]-1
-    return fiberIJK
-
-def convertV2P(fiberIJK, mV2P, origin, imageSize):
-    fiberXYZ = (np.dot(mV2P, fiberIJK.T) + origin).T
-    return fiberXYZ
+    tree = ET.ElementTree(scene)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    print(f"Scene file created at {output_path}")

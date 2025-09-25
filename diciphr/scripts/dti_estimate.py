@@ -1,12 +1,10 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
-from ..utils import ( check_inputs, make_dir, 
-                protocol_logging, DiciphrException )
-from ..nifti_utils import read_nifti, read_dwi
-from ..diffusion import ( estimate_tensor, estimate_tensor_restore, 
-                round_bvals, extract_b0, bet2_mask_nifti, 
-                extract_shells_from_multishell_dwi )
+import os, sys, logging
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrException, DiciphrArgumentParser
+from diciphr.nifti_utils import read_nifti, read_dwi
+from diciphr.diffusion import ( estimate_tensor, estimate_tensor_restore, TensorScalarCalculator,                 
+                extract_shells_from_multishell_dwi, round_bvals, extract_b0, bet2_mask_nifti )
 import nibabel as nib
 
 DESCRIPTION = '''
@@ -16,7 +14,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='DTI_Estimate'    
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-d',action='store',metavar='dwi_file',dest='dwi_file',
                     type=str, required=True, 
                     help='The DWI filename in Nifti format.'
@@ -57,14 +55,6 @@ def buildArgsParser():
                     required=False, default=False, 
                     help='Erode the brain mask one time.' 
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
@@ -72,7 +62,7 @@ def main(argv):
     args = parser.parse_args(argv)
     output_dir = os.path.dirname(os.path.realpath(args.output_base))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         check_inputs(args.dwi_file, nifti=True)
         check_inputs(output_dir, directory=True)
@@ -83,9 +73,9 @@ def main(argv):
         if args.bvec_file:
             check_inputs(args.bvec_file)
         run_dti_estimate(args.dwi_file, args.output_base, mask_file=args.mask_file, bval_file=args.bval_file, bvec_file=args.bvec_file, extract_shell=args.extract_shell, fit_method=args.fit_method, restore=args.restore, restore_N=args.N, erode=args.erode)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def run_dti_estimate(dwi_file, output_base, mask_file=None, bval_file=None, bvec_file=None, 
                 extract_shell=None, fit_method='WLS', restore=False, restore_N=0, erode=False):
@@ -123,21 +113,32 @@ def run_dti_estimate(dwi_file, output_base, mask_file=None, bval_file=None, bvec
         mask_im = bet2_mask_nifti(b0_im, erode_iterations=erode_iterations)
     if restore:
         logging.info('Estimate tensor with RESTORE algorithm')
-        tensor_im, fa_im, tr_im = estimate_tensor_restore(dwi_im, mask_im, bvals, bvecs, N=restore_N)
+        tensor_im = estimate_tensor_restore(dwi_im, mask_im, bvals, bvecs, N=restore_N)
     else:
         logging.info('Estimate tensor')
-        tensor_im, fa_im, tr_im = estimate_tensor(dwi_im, mask_im, bvals, bvecs, fit_method=fit_method)
+        tensor_im = estimate_tensor(dwi_im, mask_im, bvals, bvecs, fit_method=fit_method)
+    logging.info('Calculate DTI metrics')
+    TSC = TensorScalarCalculator(tensor_im, mask_im)
     logging.info('Write results')
     tensor_filename = output_base+'_tensor.nii.gz'
     fa_filename = output_base+'_tensor_FA.nii.gz'
     tr_filename = output_base+'_tensor_TR.nii.gz'
+    md_filename = output_base+'_tensor_MD.nii.gz'
+    ax_filename = output_base+'_tensor_AX.nii.gz'
+    rad_filename = output_base+'_tensor_RAD.nii.gz'
     mask_filename = output_base+'_tensor_mask.nii.gz'
     tensor_im.to_filename(tensor_filename)
     logging.info('Wrote {}'.format(tensor_filename))
-    fa_im.to_filename(fa_filename)
+    TSC.FA.to_filename(fa_filename)
     logging.info('Wrote {}'.format(fa_filename))
-    tr_im.to_filename(tr_filename)
+    TSC.TR.to_filename(tr_filename)
     logging.info('Wrote {}'.format(tr_filename))
+    TSC.MD.to_filename(md_filename)
+    logging.info('Wrote {}'.format(md_filename))
+    TSC.AX.to_filename(ax_filename)
+    logging.info('Wrote {}'.format(ax_filename))
+    TSC.RAD.to_filename(rad_filename)
+    logging.info('Wrote {}'.format(rad_filename))
     mask_im.to_filename(mask_filename)
     logging.info('Wrote {}'.format(mask_filename))    
     logging.info('End of Protocol {}'.format(PROTOCOL_NAME))

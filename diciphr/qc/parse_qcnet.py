@@ -12,7 +12,7 @@ def qcnet_series(qcnet_csvfile, dwi_filename, bval_filename=None, bvec_filename=
         qcnet_df = qcnet_df.loc[qcnet_df["FilePath"] == dwi_filename,['Volume','Predicted Class','Probability']]
         qcnet_df['Predicted Class'] = ['bad' if p>=threshold else 'good' for p in qcnet_df['Probability']]
         dwi_img, bvals, bvecs = read_dwi(dwi_filename, bval_filename, bvec_filename)
-        bvals = round_bvals(bvals).astype(int).flatten()
+        bvals = round_bvals(bvals).astype(np.int32).flatten()
         U = np.unique(bvals)
         series = pd.Series(name=dwi_filename, dtype=object)
         for i, b in enumerate(U):

@@ -4,9 +4,9 @@ import numpy as np
 import nibabel as nib
 from dipy.reconst import dti
 from dipy.core.gradients import gradient_table_from_bvals_bvecs
-from ..nifti_utils import read_dwi, write_dwi, nifti_image
-from .utils import erode_mask 
-from .free_water import grad_data_fit_tensor, clip_tensor_evals 
+from diciphr.nifti_utils import read_dwi, write_dwi, nifti_image
+from diciphr.fernet.utils import erode_mask 
+from diciphr.fernet.free_water import grad_data_fit_tensor, clip_tensor_evals 
 
 d = 3.0e-3
 
@@ -17,7 +17,7 @@ def estimate_tensor(dwi_data, mask, bvals, bvecs):
     gtab = gradient_table_from_bvals_bvecs(bvals, bvecs)
     tenmodel = dti.TensorModel(gtab)
     tenfit = tenmodel.fit(dwi_data, mask=(mask > 0))
-    tensor_data = tenfit.lower_triangular().astype('float32')
+    tensor_data = tenfit.lower_triangular().astype(np.float32)
     tensor_data = tensor_data[...,np.newaxis,:] * mask[...,np.newaxis,np.newaxis]
     return tensor_data
     
@@ -26,7 +26,7 @@ def calculate_scalars(tensor_data, mask):
     Calculate the scalar images from the tensor
     returns: FA, MD, TR, AX, RAD
     '''
-    mask = np.asarray(mask, dtype=np.bool)
+    mask = np.asarray(mask, dtype=bool)
     shape = mask.shape
     data = dti.from_lower_triangular(tensor_data[mask])
     w, v = dti.decompose_tensor(data)
@@ -49,7 +49,7 @@ def tissue_rois(mask, fa, tr, erode_iterations=10, fa_threshold=0.7, tr_threshol
     Calculate tissue ROIs inside a mask after eroding the mask
     With the option to exclude certain voxels
     '''
-    mask = np.asarray(mask, dtype=np.bool)
+    mask = np.asarray(mask, dtype=bool)
     mask = erode_mask(mask, erode_iterations)
     if exclude is not None:
         mask = np.logical_and(mask, exclude==0)
@@ -200,7 +200,7 @@ def gradient_descent(dwi, bvals, bvecs, mask, init_f, init_tensor, niters=50, we
         lower_triangular = clip_tensor_evals(evals, evecs, l_min_loop, l_max_loop)
         del dti_params, evals, evecs
 
-    final_tensor = np.zeros((dim_x, dim_y, dim_z, 1, 6), dtype=np.float32)
+    final_tensor = np.zeros((dim_x, dim_y, dim_z, 1, 6), dtype=float)
     final_tensor[mask, 0] = lower_triangular
     final_f = np.zeros((dim_x, dim_y, dim_z), dtype=np.float32)
     final_f[mask] = 1 - volume_fraction
@@ -220,11 +220,11 @@ def run_fernet(dwi_filename, bvals_filename, bvecs_filename, mask_filename, outp
     bvals = bvals.flatten()
     bvecs = bvecs.transpose()
     affine = dwi_img.affine
-    dwi = dwi_img.get_data()
+    dwi = dwi_img.get_fdata()
 
     logging.info("Read mask image from disk...")
     mask_img = nib.load(mask_filename)
-    mask = np.asarray(mask_img.get_data(), dtype=np.bool)
+    mask = np.asarray(mask_img.get_fdata(), dtype=bool)
     dwi[np.logical_not(mask),...] = 0 
     
     logging.info("First, fit a standard tensor and calculate FA and MD" )
@@ -233,13 +233,13 @@ def run_fernet(dwi_filename, bvals_filename, bvecs_filename, mask_filename, outp
 
     if (wm_roi is not None) and (csf_roi is not None):
         logging.info("Read ROIS corresponding to free water (CSF) and WM")
-        csf_roi = np.asarray(nib.load(csf_roi).get_data(), dtype=bool)
-        wm_roi = np.asarray(nib.load(wm_roi).get_data(), dtype=bool)    
+        csf_roi = np.asarray(nib.load(csf_roi).get_fdata(), dtype=bool)
+        wm_roi = np.asarray(nib.load(wm_roi).get_fdata(), dtype=bool)    
     else:
         logging.info("Need CSF and WM rois.")
         if exclude_mask:
             logging.info("Exclude voxels in exclude mask .")
-            exclude_mask = np.asarray(nib.load(exclude_mask).get_data(), dtype=bool)
+            exclude_mask = np.asarray(nib.load(exclude_mask).get_fdata(), dtype=bool)
         wm_roi, csf_roi = tissue_rois(mask, FA, TR, 
             erode_iterations=erode_iterations, 
             fa_threshold=fa_threshold, 
@@ -286,8 +286,8 @@ def run_fernet(dwi_filename, bvals_filename, bvecs_filename, mask_filename, outp
     nib.save(fw_diff_fa_img, "{}_difference_FA.nii.gz".format(output_basename))
     
     logging.info("Save WM and CSF rois as Nifti." )
-    csf_roi_img = nifti_image(csf_roi.astype(np.int16), affine)
-    wm_roi_img = nifti_image(wm_roi.astype(np.int16), affine)
+    csf_roi_img = nifti_image(csf_roi.astype(np.int32), affine)
+    wm_roi_img = nifti_image(wm_roi.astype(np.int32), affine)
     nib.save(csf_roi_img, "{}_csf_mask.nii.gz".format(output_basename))
     nib.save(wm_roi_img, "{}_wm_mask.nii.gz".format(output_basename))
     
@@ -298,14 +298,14 @@ def fernet_correct_dwi(dwi_filename, bvals_filename, bvecs_filename, mask_filena
     bvals = bvals.flatten()
     bvecs = bvecs.transpose()
     affine = dwi_img.affine
-    dwi = dwi_img.get_data()
+    dwi = dwi_img.get_fdata()
     logging.info("Read mask image from disk...")
     mask_img = nib.load(mask_filename)
-    mask = np.asarray(mask_img.get_data(), dtype=np.bool)
+    mask = np.asarray(mask_img.get_fdata(), dtype=bool)
     dwi[np.logical_not(mask),...] = 0 
     logging.info("Read volume fraction image from disk...")
     vf_img = nib.load(volume_fraction_filename)
-    fw_vf = vf_img.get_data()
+    fw_vf = vf_img.get_fdata()
     b0 = np.mean(dwi[...,bvals==0], axis=-1)
     tissue_vf = 1 - fw_vf
     b0_corrected = b0 * tissue_vf 
@@ -332,24 +332,24 @@ def fernet_regions(dwi_filename, bvals_filename, bvecs_filename, mask_filename, 
     bvals = bvals.flatten()
     bvecs = bvecs.transpose()
     affine = dwi_img.affine
-    dwi = dwi_img.get_data()
+    dwi = dwi_img.get_fdata()
     logging.info("Read mask image from disk...")
     mask_img = nib.load(mask_filename)
-    mask = np.asarray(mask_img.get_data(), dtype=np.bool)
+    mask = np.asarray(mask_img.get_fdata(), dtype=bool)
     dwi[np.logical_not(mask),...] = 0 
     logging.info("First, fit a standard tensor and calculate FA and MD" )
     tensor_data = estimate_tensor(dwi, mask, bvals, bvecs)
     FA, MD, TR, AX, RAD = calculate_scalars(tensor_data, mask)
     if exclude_mask:
         logging.info("Exclude voxels in exclude mask .")
-        exclude_mask = np.asarray(nib.load(exclude_mask).get_data(), dtype=bool)
+        exclude_mask = np.asarray(nib.load(exclude_mask).get_fdata(), dtype=bool)
     logging.info("Erode mask {} times".format(erode_iterations))
     logging.info("Threshold FA at {} and TR at {}".format(fa_threshold, tr_threshold))
     wm_roi, csf_roi = tissue_rois(mask, FA, TR, 
         erode_iterations=erode_iterations, fa_threshold=fa_threshold, 
         tr_threshold=tr_threshold, exclude=exclude_mask)
-    wm_roi_img = nifti_image(wm_roi.astype(np.int16), affine)
-    csf_roi_img = nifti_image(csf_roi.astype(np.int16), affine)
+    wm_roi_img = nifti_image(wm_roi.astype(np.int32), affine)
+    csf_roi_img = nifti_image(csf_roi.astype(np.int32), affine)
     logging.info("Save ROIs " )
     nib.save(wm_roi_img, "{}_wm_mask.nii.gz".format(output_basename))
     nib.save(csf_roi_img, "{}_csf_mask.nii.gz".format(output_basename))

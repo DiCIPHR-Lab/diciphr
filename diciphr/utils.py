@@ -5,11 +5,20 @@ Created on Mon Jan 18 14:04:32 2016
 @author: parkerwi
 """
 
-import os, sys, logging, tempfile, shutil, subprocess, datetime, select, time
-import nibabel as nib
-import numpy as np
+import os, sys
+import subprocess, threading, signal
+import logging, tempfile, shutil
+import json
+import atexit 
+import argparse 
+from datetime import datetime
 from socket import gethostname
 from getpass import getuser
+import nibabel as nib
+import numpy as np
+
+# Ensure logging is safely shut down at program exit
+atexit.register(logging.shutdown)
 
 ##############################################
 ############     EXCEPTIONS     ##############
@@ -24,60 +33,118 @@ def is_writable(filename):
     '''Returns true if file has write access.'''
     return os.access(filename,os.W_OK)
     
-def make_dir(path, recursive=False, pass_if_exists=False, verbose=False):
-    '''
-    Make a directory, optionally recursive, and return path
-    '''
-    if not os.path.isdir(path):
+def make_dir(path, recursive=False, pass_if_exists=False):
+    """
+    Make a directory at the given path.
+    
+    Parameters:
+    - path (str): The directory path to create.
+    - recursive (bool): If True, create intermediate directories as needed.
+    - pass_if_exists (bool): If True, do not raise an error if the directory already exists.
+    - verbose (bool): If True, print status messages.
+    
+    Returns:
+    - str: The path of the created (or existing) directory.
+    """
+    try:
         if recursive:
-            mkdir_func=os.makedirs
+            os.makedirs(path, exist_ok=pass_if_exists)
         else:
-            mkdir_func=os.mkdir
-        try:
-            mkdir_func(path)
-        except Exception as e:
-            if pass_if_exists:
-                logging.warning(str(e))
+            if pass_if_exists and os.path.exists(path):
+                logging.debug(f"Directory already exists: {path}")
             else:
-                raise e 
-    if verbose:
-        logging.info("Made directory {}".format(path))
+                os.mkdir(path)
+        logging.info(f"Directory created: {path}")
+    except FileExistsError:
+        if not pass_if_exists:
+            raise
+        logging.debug(f"Directory already exists and was skipped: {path}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to create directory '{path}': {e}")
+    
     return path
 
 def make_temp_dir(directory=None, prefix='tmp'):
-    '''Makes and returns a path to a unique working directory.
-    
-    If directory is None,
-        if environmental variable CBICA_TMPDIR exists, use that
-        else, make folder in python module tmpfile's tmp directory/tmp
-    else,
-        make a new folder inside directory
-        
-    Parameters 
+    '''Creates and returns a path to a unique working directory.
+
+    If `directory` is None:
+        - Use TMPDIR if set, else raise EnvironmentError
+
+    Parameters
     ----------
     directory : Optional[str]
-        Directory inside of which to create a new tempdir
+        Directory inside which to create a new tempdir
     prefix : Optional[str]
         Prefix of the new tempdir, default 'tmp'
-        
+
     Returns
     -------
     str
         The newly created tempdir.
     '''
-    from uuid import uuid4    
-        
     if directory is None:
-        directory = os.environ.get('TMPDIR',None)
-    
+        directory = get_diciphr_tmpdir()
+        if directory is None:
+            raise EnvironmentError("No temporary directory specified. Environmental variable TMPDIR must be set.")    
+
+    # Ensure the base directory exists
     try:
+        os.makedirs(directory, exist_ok=True)
+    except Exception as e:
+        logging.exception(f"Failed to create base temp directory {directory}: {e}")
+        raise
+
+    # Try to create a unique temp directory inside it
+    jobid = os.environ.get('SLURM_JOB_ID','')
+    if jobid:
+        prefix = prefix+'_'+jobid 
+    try:
+        from uuid import uuid4
         workdir = tempfile.mkdtemp(prefix=prefix, dir=directory, suffix=str(uuid4()))
-    except Exception:
-        workdir = tempfile.mkdtemp(prefix=prefix, dir=directory)
-    logging.info('Created temporary directory {}'.format(workdir))
+    except Exception as e:
+        logging.warning(f"Failed to create temp dir with UUID suffix: {e}")
+        try:
+            workdir = tempfile.mkdtemp(prefix=prefix, dir=directory)
+        except Exception as e2:
+            logging.exception(f"Failed to create temp dir without UUID suffix: {e2}")
+            raise
+
+    logging.info(f"Created temporary directory {workdir}")
     return workdir
+
+class TempDirManager:
+    def __init__(self, directory=None, prefix='tmp', delete=True):
+        self.tmpdir = make_temp_dir(directory, prefix)
+        if get_diciphr_tmpdir():
+            # User provided --workdir option - do not clean up 
+            self.delete = False
+        else:
+            self.delete = delete 
+            
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.cleanup()
+        
+    def path(self):
+        return self.tmpdir 
     
+    def cleanup(self):
+        if self.tmpdir and os.path.exists(self.tmpdir) and self.delete:
+            try:
+                logging.info(f"Deleting temp dir: {self.tmpdir}")
+                shutil.rmtree(self.tmpdir)
+            except Exception as e:
+                logging.warning(f"Failed to delete temp dir {self.tmpdir}: {e}")
+            finally:
+                self.tmpdir = None 
+        elif not self.delete:
+            logging.info(f"Preserving temp dir: {self.tmpdir}")
+
 def random_string(length=16):
+    import random
+    import string 
     return ''.join(random.SystemRandom().choice(string.ascii_uppercase + string.digits) for _ in range(length))
     
 def remove_file(*args):
@@ -97,85 +164,182 @@ def find_all_files_in_dir(directory, followlinks=True):
     files_list=sum([[os.path.join(root, name) for name in files] for root, dirs, files in os.walk(directory, followlinks=followlinks)],[])
     logging.debug('Files: {}'.format(files_list))
     return files_list
+
+def read_json_file(filepath):    
+    """
+    Loads a JSON file and returns its contents as a dictionary.
+
+    Parameters:
+        filepath (str): Path to the JSON file.
+
+    Returns:
+        dict: Dictionary representation of the JSON file.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        json.JSONDecodeError: If the file is not a valid JSON.
+    """
+    with open(filepath, 'r', encoding='utf-8') as fid:
+        return json.load(fid)
     
+##############################################
+####  SCRIPT LOGGING/ARGPARSE FUNCTIONS  #####
+##############################################
+class DiciphrArgumentParser(argparse.ArgumentParser):
+    '''
+    A specialized ArgumentParser that adds three options common across all DiCIPHR scripts.
+    '''
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Flag to ensure options are added only once
+        self._options_added = False  
+
+    def _add_common_options(self):
+        if self._options_added:
+            return
+        grp = self.add_argument_group('Other options')
+        grp.add_argument(
+            '--debug', action='store_true', dest='debug', 
+            help='Debug mode: sets logging level, and temporary directories will not be deleted.'
+        )
+        grp.add_argument(
+            '--workdir', action='store', metavar='<dir>', dest='workdir', type=str, default=None,
+            help='The directory to preserve intermediate results. If not provided, a temporary directory will be created in $TMPDIR'
+        )
+        grp.add_argument(
+            '--logfile', action='store', metavar='<file>', dest='logfile', type=str, default=None,
+            help='A log file. If it does not exist, it will be created. Overrides --logdir'
+        )
+        grp.add_argument(
+            '--logdir', action='store', metavar='<dir>', dest='logdir', type=str, default=None,
+            help='A log directory. If it does not exist, it will be created, and a logfile will be created with name generated automatically'
+        )
+        self._options_added = True
+
+    def parse_args(self, *args, **kwargs):
+        self._add_common_options()
+        args = super().parse_args(*args, **kwargs)
+        # detect workdir 
+        if args.workdir is not None:
+            make_dir(args.workdir, recursive=True, pass_if_exists=True)
+            set_diciphr_tmpdir(args.workdir)
+        return args 
+
+    def parse_known_args(self, *args, **kwargs):
+        self._add_common_options()
+        args, unknown = super().parse_known_args(*args, **kwargs)
+        # detect workdir 
+        if args.workdir is not None:
+            make_dir(args.workdir, recursive=True, pass_if_exists=True)
+            set_diciphr_tmpdir(args.workdir)
+        return args, unknown
+
+def timestamp():
+    return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    
+class MaxLevelFilter(logging.Filter):
+    def __init__(self, max_level):
+        self.max_level = max_level
+
+    def filter(self, record):
+        return record.levelno <= self.max_level
+
+def set_up_logging(filename='', protocol_name='', debug=False, quiet=False, log_basics=False):
+    """
+    Set up logging to file, stdout (for INFO/DEBUG), and stderr (for WARNING+).
+    """
+    format_string = "%(asctime)s [{}] [%(levelname)-5.5s]  %(message)s".format(protocol_name or "%(threadName)-12.12s")
+    formatter = logging.Formatter(format_string)
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()  # Clear existing handlers
+    root_logger.setLevel(logging.DEBUG if debug else (logging.ERROR if quiet else logging.INFO))
+
+    # File handler
+    if filename:
+        file_handler = logging.FileHandler(filename)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+    # Stdout handler for DEBUG and INFO
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(logging.DEBUG)
+    stdout_handler.addFilter(MaxLevelFilter(logging.INFO))
+    stdout_handler.setFormatter(formatter)
+    root_logger.addHandler(stdout_handler)
+
+    # Stderr handler for WARNING and above
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(formatter)
+    root_logger.addHandler(stderr_handler)
+    
+    if debug:
+        logging.debug('Logging level set to DEBUG')
+    elif quiet:
+        logging.warning('Logging level set to ERROR')
+    else:
+        logging.info('Logging level set to INFO')
+
+    if log_basics:
+        logging.info(f'username: {getuser()}')
+        logging.info(f'hostname: {gethostname()}')
+        logging.info(f'cwd: {os.getcwd()}')
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        if slurm_job_id:
+            logging.info(f'SLURM_JOB_ID: {slurm_job_id}')
+
+def protocol_logging(protocol_name, directory=None, filename=None, debug=False, create_dir=True):
+    """
+    Set up the log file for a protocol named `protocol_name`.
+
+    Parameters:
+        protocol_name (str): Name of the protocol.
+        directory (str, optional): Directory where the log file will be created.
+        filename (str, optional): Full path to the log file. Overrides `directory` if provided.
+        debug (bool, optional): If True, sets logging level to DEBUG and disables cleanup of temp directories.
+        create_dir (bool, optional): If True, creates the directory if it doesn't exist.
+
+    Returns:
+        str: Path to the log file, or an empty string if no file is used.
+
+    Raises:
+        ValueError: If the directory or filename is not writable or invalid.
+    """
+    log_file = ''
+
+    if filename:
+        log_file = filename
+        dir_path = os.path.dirname(log_file) or '.'
+        if not os.path.exists(dir_path):
+            if create_dir:
+                os.makedirs(dir_path, exist_ok=True)
+            else:
+                raise ValueError(f"Directory for log file does not exist: {dir_path}")
+        if not os.access(dir_path, os.W_OK):
+            raise PermissionError(f"Directory is not writable: {dir_path}")
+    elif directory:
+        if not os.path.exists(directory):
+            if create_dir:
+                os.makedirs(directory, exist_ok=True)
+            else:
+                raise ValueError(f"Directory does not exist: {directory}")
+        if not os.access(directory, os.W_OK):
+            raise PermissionError(f"Directory is not writable: {directory}")
+        _slurm_jid = get_slurm_jobid()
+        _timestamp = timestamp()
+        log_file = os.path.join(directory, f"{protocol_name}_{_slurm_jid}_{_timestamp}.log")
+    set_up_logging(
+        filename=log_file,
+        protocol_name=protocol_name,
+        debug=debug, 
+        log_basics=True, 
+    )
+    return log_file
+
 ##############################################
 ############   MISC FUNCTIONS   ##############
 ##############################################
-
-def set_up_logging(filename='', protocol_name='', tee_to_stderr=True, debug=False, quiet=False):
-    '''
-    Convenience function to set up logging environment.
-    
-    Parameters 
-    ----------
-    filename : Optional[str]
-        The log filename 
-    protocol_name : Optional[str]
-        A name to identify the script e.g. MyScript
-        Will default logging module's threadName 
-    tee_to_stderr : Optional[bool]
-        If true, logging messages will also be printed to stderr. Default true. 
-    debug : Optional[bool]
-        If true, sets logging level to DEBUG. Default true. 
-    quiet : Optional[bool]
-        If true, sets logging level to ERROR. Default true. 
-    '''
-    
-    format_string = "%(asctime)s [%(threadName)-12.12s] [%(levelname)-5.5s]  %(message)s"
-    if protocol_name:    
-        format_string = "%(asctime)s ["+protocol_name+" ] [%(levelname)-5.5s]  %(message)s"
-    logFormatter = logging.Formatter(format_string)
-    rootLogger = logging.getLogger()
-    if filename:
-        fileHandler = logging.FileHandler(filename)
-        fileHandler.setFormatter(logFormatter)
-        rootLogger.addHandler(fileHandler)
-    if tee_to_stderr:
-        #http://stackoverflow.com/questions/13733552/logger-configuration-to-log-to-file-and-print-to-stdout
-        consoleHandler = logging.StreamHandler()
-        consoleHandler.setFormatter(logFormatter)
-        rootLogger.addHandler(consoleHandler)
-    logging.getLogger().setLevel(logging.INFO)
-    if debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-    if quiet:
-        logging.getLogger().setLevel(logging.WARNING)
-    
-def log_basics():
-    '''Log some basic info about a SGE job for pipelining.'''
-    logging.info('username: {}'.format(getuser()))
-    logging.info('hostname: {}'.format(gethostname()))
-    logging.info('cwd: {}'.format(os.getcwd()))
-    try:
-        logging.info('jobid: {}'.format(os.environ.get('JOB_ID')))
-        logging.info('jobname: {}'.format(os.environ.get('JOB_NAME')))
-    except:
-        pass
-    
-def protocol_logging(protocol_name, path=None, debug=False):
-    '''Set up the log file for a protocol named protocol_name at a path. 
-    Path can be file or directory (a file will be created).
-    If path is None or empty string, logging will only print to stderr.'''
-    timestamp=time.strftime('%Y%m%d-%H%M%S.%s')
-    if path is None:
-        log_file=''
-    else:
-        if os.path.isdir(path):
-            log_file = os.path.join(path,'{}_{}.log'.format(protocol_name,timestamp))
-        else:
-            log_file = path
-    set_up_logging(filename=log_file,protocol_name=protocol_name,tee_to_stderr=True,debug=debug)
-    log_basics()
-    return log_file
-    
-def is_nifti_file(filename):
-    """Returns True if filename is a nifti file. """
-    try:
-        im = nib.Nifti1Image.from_filename(filename)
-    except:
-        return False
-    return True
-
 def is_flirt_mat_file(filename):
     '''Returns true if filename is a 4x4 text file that satisfies requirements for an affine transformation matrix.'''
     import numpy as np
@@ -187,13 +351,21 @@ def is_flirt_mat_file(filename):
             return True
     except:
         return False
+
+def is_nifti_file(filename):
+    """Returns True if filename is a nifti file. """
+    try:
+        nib.Nifti1Image.from_filename(filename)
+    except:
+        return False
+    return True
         
-def check_inputs(*args, **kwargs):
+def check_inputs(*paths, nifti=False, directory=False, writable=False):
     '''For paths in args, check if inputs exist and are readable, and raise a DiciphrException if not.
     
     Parameters
     ----------
-    *args : str
+    *paths : str
         Paths to check for existence and readability.
     nifti : bool
         If True, further check that the path is to a valid, readable Nifti file.
@@ -208,19 +380,15 @@ def check_inputs(*args, **kwargs):
         Absolute paths of inputs
     '''
     logging.debug('diciphr.utils.check_inputs')
-    if len(args) == 0:
+    if len(paths) == 0:
         raise DiciphrException('No files provided')
-    
-    nifti = kwargs.get('nifti', False)
-    directory = kwargs.get('directory', False)
-    writable = kwargs.get('writable', False)
     
     not_exist=[]
     not_readable=[]
     not_writable=[]
     not_nifti=[]
     not_directory=[]
-    for a in args:
+    for a in paths:
         if not os.access(a, os.F_OK):
             not_exist.append(a)
         elif not os.access(a, os.R_OK):
@@ -242,10 +410,10 @@ def check_inputs(*args, **kwargs):
         raise DiciphrException('Paths are not directories: {}'.format(','.join(not_directory)))
     if not_nifti:
         raise DiciphrException('Files are not valid nifti: {}'.format(','.join(not_nifti)))
-    if len(args) > 1:
-        return list(os.path.realpath(_a) for _a in args)
+    if len(paths) > 1:
+        return tuple(os.path.realpath(_a) for _a in paths)
     else:
-        return os.path.realpath(args[0])
+        return os.path.realpath(paths[0])
 
 def logical_or(*datas):
     '''
@@ -267,10 +435,18 @@ def logical_and(*datas):
         d = np.logical_and(d, a.astype(np.bool))
     return d
     
+def force_to_list(arg):
+    from collections.abc import Iterable
+    if not isinstance(arg, Iterable) or isinstance(arg, str):
+        arg = [arg] 
+    return list(arg)
+    
+def is_string(s):
+    return isinstance(s, str)
+
 ##############################################
 ############  ENVIRONMENT  ###################
 ##############################################
-
 def which(program, raise_exception=True):
     """If an executable is at given path or found in PATH environmental variable, return path to command."""
     def is_exe(fpath):
@@ -289,171 +465,171 @@ def which(program, raise_exception=True):
     if raise_exception:
         raise DiciphrException('Cannot find executable: {}'.format(program))
     return None
-        
+ 
+def get_slurm_jobid():
+    return os.environ.get('SLURM_JOB_ID', 'interactive')
+
+def get_diciphr_tmpdir():
+    return os.environ.get('DICIPHR_TMPDIR', os.environ.get('TMPDIR'))
+
+def set_diciphr_tmpdir(path):
+    os.environ['DICIPHR_TMPDIR'] = os.path.realpath(path)
+    
 ##############################################
-############   CLASSES   #####################
-##############################################        
-class ExecCommand(object):
-    '''
-    ExecCommand object
-    
-    __init__
-    set_environment - changes environment
-    run -- runs and returns returncode,stderr file-like object stdout file-like object
-    pop_stderr
-    pop_stdout
-    get_stderr get a pointer to file-like object
-    get_stdout get a pointer to file-like object
-    print_stderr = prints and removes file-like object
-    print_stdout = prints and removes file-like object
-    __del__ = prints to stderr/stdout if it still exists
-    '''
-    
-    def __init__(self,cmd_array,stdin=None,environ={},cwd=None,quiet=False):
+############   Subprocess   ##################
+##############################################
+class TerminationSignalReceived(Exception):
+    """Custom exception to trigger cleanup on signal."""
+    def __init__(self, signum):
+        self.signum = signum 
+        self.signal_name = signal.Signals(signum).name
+        super().__init__(f"Received signal {self.signal_name} ({signum})")
+        
+    def __str__(self):
+        return f"Signal {self.signal_name} ({self.signum}) received"
+
+class ExecCommand:
+    """
+    A class to execute shell commands in SLURM or HPC environments,
+    with support for environment variables, working directories, and real-time logging.
+
+    Attributes:
+        cmd_array (list): The command and arguments to execute.
+        stdin (str): Optional input to pass to the command.
+        environ (dict): Environment variables to set for the command.
+        cwd (str): Working directory to run the command in.
+        quiet (bool): If True, suppress logging output.
+    """
+
+    def __init__(self, cmd_array, stdin=None, environ=None, cwd=None, quiet=False):
+        if not isinstance(cmd_array, (list, tuple)):
+            raise TypeError("cmd_array must be a list or tuple of command arguments")
+        self.cmd_array = list(map(str, cmd_array))
         self.stdin = stdin
-        self.cmd_array = [str(a) for a in cmd_array]
-        self.environ = os.environ.copy()
-        if environ:
-            for k,v in environ.items():
-                self.environ[k] = v
-                logging.debug('Updating environmental variable {0} to {1}'.format(k,v))
-        self.workdir = cwd
-        self.log_note = ''
+        self.environ = environ or {}
+        self.cwd = cwd
         self.quiet = quiet
-        
-    def set_stdin(self,openfile):
-        self.stdin = openfile
-
-    def make_temp_dir(self):
-        self.workdir = make_temp_dir(prefix=self.cmd_array[0][:8])
-                
-    def set_environment(self,environ):
-        self.environ = os.environ.copy()
-        for k,v in environ.items():
-            self.environ[k]=v
-            
-    def set_up(self):
-        stdin=None if self.stdin is None else subprocess.PIPE
-        self._process = subprocess.Popen(
-                    ' '.join(self.cmd_array),
-                    stdin=self.stdin,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=self.environ,
-                    cwd=self.workdir,
-                    shell=True
-        )
-        self.stdout = self._process.stdout
-        self.stderr = self._process.stderr
-        if self.stdin is not None:
-            self.log_note += 'from PIPE'
-            self.stdin.close()
-        self.poll = self._process.poll
-        
-    def communicate(self):
-        if self.stdin is not None:
-            self.stdin.close()
-        ret = self._process.communicate()
-        self.returncode = self._process.returncode
-        return ret        
-        
-    def wait(self):
-        return self._process.wait()
-        
-    def run(self):
-        self.returncode = -1 
-        if self.workdir:
-            logging.info('Executing command [ {} ] in dir {}'.format(' '.join(self.cmd_array),self.workdir))
-        else:
-            logging.info('Executing command [ {} ]'.format(' '.join(self.cmd_array)))
-        try:
-            self.set_up()
-            ret = [None,'','']
-            while True:
-                reads = [self.stdout.fileno(), self.stderr.fileno()]
-                R = select.select(reads, [], [])
-                for fd in R[0]:
-                    if fd == self.stderr.fileno():
-                        line = self.stderr.readline()
-                        try:
-                            line = str(line.decode('utf-8','replace')).strip()
-                        except AttributeError:
-                            line = str(line).strip()
-                        if ( not self.quiet ) and bool(line): 
-                            logging.warning(line)
-                        ret[2] += line
-                    if fd == self.stdout.fileno():
-                        line = self.stdout.readline()
-                        try:
-                            line = str(line.decode('utf-8','replace')).strip()
-                        except AttributeError:
-                            line = str(line).strip()
-                        if ( not self.quiet ) and bool(line): 
-                            logging.info(line)
-                        ret[1] += line
-                if self.poll() is not None:
-                    break
-            ret[0] = self.poll()
-            self.returncode = ret[0]
-        except Exception as e:
-            logging.error(repr(e))
-            raise e
-        finally:
-            if self.returncode != 0:
-                if self.log_note:
-                    self.log_note = 'return code {}:'.format(self.returncode) + self.log_note 
-                else:
-                    self.log_note = 'return code {}'.format(self.returncode)
-                logging.error(self.log_note)
-        self.stdout = ret[1]
-        self.stderr = ret[2]
-        return ret
-        
-    def pipe_to(self,ExecCommandInstance):
-        self.set_up()
-        ExecCommandInstance.set_stdin(self.stdout)
-        #ExecCommandInstance.set_up()
-        #ExecCommandInstance.stdin.close()
-                
-    def get_stdout(self):
-        return self.stdout
-        
-    def get_stderr(self):
-        return self.stderr
-
-def force_to_list(arg):
-    from collections import Iterable
-    try:
-        # python 2.x
-        if not isinstance(arg, Iterable) or isinstance(arg, basestring):
-            arg = [arg] 
-    except:
-        # python 3.x
-        if not isinstance(arg, Iterable) or isinstance(arg, str):
-            arg = [arg] 
-    return list(arg)
+        self.process = None 
+        # Register SIGTERM and SIGINT handlers
+        signal.signal(signal.SIGTERM, self._handle_termination_signal)
+        signal.signal(signal.SIGINT, self._handle_termination_signal)
+        signal.signal(signal.SIGXCPU, self._handle_termination_signal)
+        signal.signal(signal.SIGUSR1, self._handle_termination_signal)
     
-def is_string(s):
-    try:
-        #python 2 
-        return isinstance(s, basestring)
-    except NameError:
-        #python 3 
-        return isinstance(s, str)    
+    def _handle_termination_signal(self, signum, frame):
+        raise TerminationSignalReceived(signum)
+    
+    def _flush_logs(self):
+        for handler in logging.root.handlers:
+            try:
+                handler.flush()
+            except Exception as e:
+                print(f"[WARN] Failed to flush log handler: {e}", file=sys.stderr)
+                
+    def run(self, raise_on_error=True):
+        env = os.environ.copy()
+        env.update(self.environ)
+        logging.info("Run command:")
+        logging.info(" ".join(self.cmd_array))
+        if self.environ:
+            logging.info(f"Provided environmental variables: {self.environ}")
+        try:
+            self.process = subprocess.Popen(
+                self.cmd_array,
+                stdin=subprocess.PIPE if self.stdin else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=self.cwd,
+                env=env,
+                universal_newlines=True,
+                bufsize=1  # Line-buffered
+            )
+
+            def log_stream(stream, log_func):
+                for line in iter(stream.readline, ''):
+                    log_func(line.rstrip())
+                stream.close()
+
+            threads = []
+            if not self.quiet:
+                threads.append(threading.Thread(target=log_stream, args=(self.process.stdout, logging.info)))
+                threads.append(threading.Thread(target=log_stream, args=(self.process.stderr, logging.warning)))
+
+            for t in threads:
+                t.start()
+
+            if self.stdin:
+                self.process.stdin.write(self.stdin)
+                self.process.stdin.close()
+
+            for t in threads:
+                t.join()
+
+            returncode = self.process.wait()
+
+            if returncode != 0:
+                if raise_on_error:
+                    raise subprocess.CalledProcessError(returncode, self.cmd_array)
+                else:
+                    logging.warning(f"Command failed with return code {returncode}")
+
+            self._flush_logs()
+            return returncode
+
+        except subprocess.CalledProcessError as e:
+            logging.exception(f"Command failed with return code {e.returncode}")
+            return e.returncode
         
-def qsub_submit(command, args=[], queue=None, job_name=None, hold_jid=[]):
-    cmd=['qsub']
-    if is_string(command):
-        command = [command]
-    if queue is not None:
-        cmd.extend(['-l',queue])
-    if job_name is not None:
-        cmd.extend(['-N',job_name])
-    if hold_jid:
-        if is_string(hold_jid):
-            hold_jid=[hold_jid]
-        cmd.extend(['-hold_jid',','.join(hold_jid)])
-    cmd.extend(command)
-    returncode, stdout, stderr = ExecCommand(cmd).run()
-    job_id = stdout.split(' ')[2]
-    return job_id
+        except TerminationSignalReceived as e:
+            logging.warning(f"Terminating due to signal: {e.signal_name}")
+            if self.process:
+                try:
+                    self.process.terminate()
+                    self.process.wait(timeout=5)
+                    logging.info(f"Subprocess terminated cleanly after signal {e.signal_name}.")
+                except Exception as ex:
+                    logging.error(f"Failed to terminate subprocess: {ex}")
+            self._flush_logs()
+            raise 
+        
+        except Exception as e:
+            logging.exception("Command execution failed")
+            raise RuntimeError("Command execution failed") from e
+
+class ExecFSLCommand(ExecCommand):
+    """
+    Special case of ExecCommand for FSL programs
+    If the system has FSLSIF environmental set, will use apptainer
+    """
+    
+    def __init__(self, cmd_array, stdin=None, environ=None, cwd=None, quiet=False, 
+                gpu=False, container_path=None, container_fslbin="/usr/local/fsl/bin"):
+        if not isinstance(cmd_array, (list, tuple)):
+            raise TypeError("cmd_array must be a list or tuple of command arguments")
+        cmd_array = list(map(str, cmd_array))
+        if container_path:
+            fslsif = container_path
+        else:
+            fslsif = os.environ.get('FSLSIF',None)
+        if fslsif:
+            fslcmd = os.path.basename(cmd_array[0])
+            # use apptainer 
+            prepend_cmd = ["apptainer","exec"] 
+            if gpu:
+                prepend_cmd.extend(["--nv"])
+            env_string = "FSLOUTPUTTYPE=NIFTI_GZ"
+            if environ:
+                for k, v in environ.items():
+                    env_string += f",{k}={v}"
+            prepend_cmd.extend(["--cleanenv","--env",env_string])
+            _diciphr_tmpdir = get_diciphr_tmpdir()
+            if _diciphr_tmpdir:
+                prepend_cmd.extend(["--bind",f"{_diciphr_tmpdir}:{_diciphr_tmpdir}"])
+            prepend_cmd.append(fslsif)
+            # special case for eddy 
+            if fslcmd == 'eddy':
+                prepend_cmd.extend([f"{container_fslbin}/fslpython", f"{container_fslbin}/{fslcmd}"])
+            else:
+                prepend_cmd.extend([f"{container_fslbin}/{fslcmd}"])
+            cmd_array = prepend_cmd + cmd_array[1:]
+        super().__init__(cmd_array, stdin=stdin, environ=environ, cwd=cwd, quiet=quiet)

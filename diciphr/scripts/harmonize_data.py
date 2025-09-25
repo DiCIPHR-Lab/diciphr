@@ -1,15 +1,15 @@
 #! /usr/bin/env python
 
-import os, argparse, sys
+import os, sys
 import re 
 import pandas as pd
 import numpy as np 
 import nibabel as nib
 import patsy 
 import logging
-from ..utils import check_inputs, make_dir, protocol_logging
-from ..statistics.harmonization import combat, covbat
-from ..nifti_utils import ( nifti_image, read_nifti, 
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.statistics.harmonization import combat, covbat
+from diciphr.nifti_utils import ( nifti_image, read_nifti, 
             strip_ext, strip_nifti_ext, get_nifti_ext )
 
 DESCRIPTION = '''
@@ -19,7 +19,7 @@ PROTOCOL_NAME='ComBat'
 
 def parseCommandLine(argv=None):
     # create arguments for the inputs
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-f', type=str, dest='filename_template', required=True,
                 help='Path to a csv of measurements with subject ID in the leftmost column, OR '+
                     'path to template space nifti files, with {s} in place of subject ID.')
@@ -44,14 +44,6 @@ def parseCommandLine(argv=None):
     # not implemented in covbat 
     # parser.add_argument('-r', '-refbatch', type=str, default=None, dest='refbatch', 
                 # help='Site to be used as the batch reference, if any.')
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     args = p.parse_args(argv)
     try:
         ext = get_nifti_ext(os.path.basename(args.filename_template))
@@ -133,7 +125,7 @@ def covbat_post_niftis(harmonized_data, cohort, mask_img, filename_template):
  
 def main(argv):
     args = parseCommandLine(argv)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug) 
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     logging.info("Read cohort file")
     cohort = prepare_cohort(args.cohort, args.site, args.formula)
     os.makedirs(args.outdir, exist_ok=True)

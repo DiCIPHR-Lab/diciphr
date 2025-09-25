@@ -1,12 +1,14 @@
 #! /usr/bin/env python
 
-import os, sys, shutil, logging, traceback, argparse
+import os, sys, shutil, logging
 import nibabel as nib
 from nibabel.trackvis import read as read_trk
 from dipy.io.streamline import load_tractogram
-from ..utils import ( check_inputs, make_dir, make_temp_dir, protocol_logging, DiciphrException )
-from ..tractography.track_utils import filter_tracks_include, filter_tracks_exclude, track_density_image
-from ..nifti_utils import add_images, resample_image
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging, TempDirManager, 
+                            DiciphrArgumentParser, DiciphrException )
+from diciphr.tractography.track_utils import ( filter_tracks_include, 
+                            filter_tracks_exclude, track_density_image )
+from diciphr.nifti_utils import add_images, resample_image
 
 DESCRIPTION = '''
     Filter trk files 
@@ -15,7 +17,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='filter_tracks'
 
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-f', action='store', metavar='fiberfile', dest='input_trackfile',
                     type=str, required=True,
                     help='Path of the trackvis .trk file'
@@ -44,21 +46,13 @@ def buildArgsParser():
                     type=float, required=False, default=0.0,
                     help='Provide a desired voxel size of the TDI image. Affine and image size will be ascertained from the reference nifti.'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
     # 2. Parse command line args    
     parser = buildArgsParser()
     args = parser.parse_args(argv)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         # 5. Check necessary inputs exist
         check_inputs(args.input_trackfile)
@@ -72,9 +66,9 @@ def main(argv):
             args.output_trackfile = args.input_trackfile
         if args.tdi_filename:
             run_track_density_image(args.output_trackfile, args.tdi_filename, args.reference_nifti, args.voxelsize)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
 
 def run_track_density_image(input_trackfile, output_tdifile, reference_nifti, voxel=0.0):
     logging.info('TDI Image')
@@ -91,8 +85,8 @@ def run_track_density_image(input_trackfile, output_tdifile, reference_nifti, vo
     
 def run_filter_tracks(input_trackfile, output_trackfile, include_masks, exclude_masks):
     logging.info('Filter tracks through {} excluding {}'.format(include_masks, exclude_masks))
-    tmpdir=make_temp_dir(prefix='filter_tracks')
-    try:
+    with TempDirManager(prefix='filter_tracks') as manager:
+        tmpdir = manager.path()
         exclude_mask = None
         if exclude_masks:
             logging.debug('Add all exclusion masks into one nifti')
@@ -119,11 +113,7 @@ def run_filter_tracks(input_trackfile, output_trackfile, include_masks, exclude_
             filter_tracks_exclude(input_trk_file, exclude_mask, output_trk_file)
         logging.info('Write tracks to {}'.format(output_trackfile))
         shutil.copyfile(final_trk_file, output_trackfile)
-    except Exception as e:
-        logging.error(str(e))
-        raise e
-    finally:
-        shutil.rmtree(tmpdir)    
+       
 
 if __name__ == '__main__': 
     main(sys.argv[1:])

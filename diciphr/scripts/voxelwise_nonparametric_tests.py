@@ -1,13 +1,13 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
+import os, sys, logging
 from diciphr.nifti_utils import nifti_image
 import nibabel as nib
 import pandas as pd
-from diciphr.statistics.utils import filter_cohort
+from diciphr.statistics.stats_utils import filter_cohort
 from diciphr.statistics.elementwise import ( results_to_niftis,
             elementwise_anderson_darling, elementwise_mannwhitneyu )
-from diciphr.utils import check_inputs, make_dir, protocol_logging
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from numpy import asarray 
 
 DESCRIPTION = '''
@@ -16,7 +16,7 @@ DESCRIPTION = '''
 
 PROTOCOL_NAME='Voxelwise_Nonparametric_Tests'
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-f', action='store', metavar='filename', dest='filename_template',
                     type=str, required=True,
                     help='The data filename template, with {s} replaced by subject ID.'
@@ -61,14 +61,6 @@ def buildArgsParser():
                     type=str, required=False, default='',
                     help='The group label of the second group. If this group is higher, U value will be negative.'
     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False,
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile',
-                    type=str, required=False, default=None,
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
 
 def main(argv):
@@ -76,7 +68,7 @@ def main(argv):
     args = parser.parse_args()
     output_dir = os.path.dirname(os.path.realpath(args.outbase))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         if args.mannwhitneyu and ( not args.group_column or not args.groupA or not args.groupB ):
             parser.error("For Mann Whitney U test, -g column -a groupA and -b groupB must be defined")
@@ -99,8 +91,8 @@ def main(argv):
         cohort.to_csv('{}_{}.csv'.format(args.outbase, 'cohort'), index=True, index_label=index_label)
         logging.info("Load Nifti mask and all data")
         mask_im = nib.load(args.mask)
-        mask_data = mask_im.get_data() > 0
-        data = asarray([ nib.load(args.filename_template.format(s=s)).get_data()[mask_data] for s in subjects ])
+        mask_data = mask_im.get_fdata() > 0
+        data = asarray([ nib.load(args.filename_template.format(s=s)).get_fdata()[mask_data] for s in subjects ])
         if args.anderson_darling:
             logging.info("Perform voxelwise Anderson Darling test of normality")
             andersondarling_results = elementwise_anderson_darling(data)
@@ -119,16 +111,16 @@ def main(argv):
             if len(subjects_groupB) == 0:
                 raise ValueError("No subjects found in groupB")
             filenames = [ args.filename_template.format(s=s) for s in subjects_groupA + subjects_groupB ]
-            groupA_data = asarray([ nib.load(args.filename_template.format(s=s)).get_data()[mask_data] for s in subjects_groupA ])
-            groupB_data = asarray([ nib.load(args.filename_template.format(s=s)).get_data()[mask_data] for s in subjects_groupB ])
+            groupA_data = asarray([ nib.load(args.filename_template.format(s=s)).get_fdata()[mask_data] for s in subjects_groupA ])
+            groupB_data = asarray([ nib.load(args.filename_template.format(s=s)).get_fdata()[mask_data] for s in subjects_groupB ])
             mannwhitneyu_results = elementwise_mannwhitneyu(groupA_data, groupB_data)
             logging.info("Save results as Nifti")
             nifti_results = results_to_niftis(mannwhitneyu_results, mask_im)
             for key in nifti_results.keys():
                 nifti_results[key].to_filename('{0}_{1}.nii.gz'.format(args.outbase, key))
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
 
 
 if __name__ == '__main__':

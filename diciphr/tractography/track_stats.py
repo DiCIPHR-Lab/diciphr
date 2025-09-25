@@ -60,10 +60,10 @@ def cohens_kappa_tdi(tdi_im1, tdi_im2, brain_mask_im):
     float
         Cohen's kappa value
     '''
-    tdi_data1=(tdi_im1.get_data() > 0).astype(int)  # 0 and 1 
-    tdi_data2=(tdi_im2.get_data() > 0).astype(int)  # 0 and 1 
+    tdi_data1=(tdi_im1.get_fdata() > 0).astype(np.int32)  # 0 and 1 
+    tdi_data2=(tdi_im2.get_fdata() > 0).astype(np.int32)  # 0 and 1 
     tdi_intersection_data = tdi_data1 * tdi_data2
-    total_voxels=np.sum(brain_mask_im.get_data() > 0)  #universal set 
+    total_voxels=np.sum(brain_mask_im.get_fdata() > 0)  #universal set 
     num_voxels1=np.sum(tdi_data1)   #A
     num_voxels2=np.sum(tdi_data2)   #B 
     pp = np.sum(tdi_intersection_data)

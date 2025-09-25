@@ -1,12 +1,12 @@
 #! /usr/bin/env python
 
-import os, sys, shutil, logging, argparse, traceback
-from ..utils import ( check_inputs, is_writable, 
-                make_dir, protocol_logging, DiciphrException )
-from ..nifti_utils import ( read_nifti, write_nifti, 
+import os, sys, logging
+from diciphr.utils import ( check_inputs, is_writable, make_dir, 
+                protocol_logging, DiciphrArgumentParser, DiciphrException )
+from diciphr.nifti_utils import ( read_nifti, write_nifti, 
                 strip_nifti_ext, get_nifti_ext )
-from ..diffusion import is_tensor
-from ..statistics.roi_stats import sample_dti_roistats
+from diciphr.diffusion import is_tensor
+from diciphr.statistics.roi_stats import sample_dti_roistats
 import numpy as np
 import pandas as pd 
 
@@ -17,7 +17,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='ROI_Stats'
 
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-s', '--subjects', action='store', metavar='<csv>', dest='subjectfile',
                     type=str, required=True, 
                     help='A text file containing subject IDs'
@@ -46,37 +46,34 @@ def buildArgsParser():
                     type=str, required=False, default=['mean'], nargs="*", 
                     help='The ROI measures, one or more of mean, median, std, volume.'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False,
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile',
-                    type=str, required=False, default=None,
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
-
-def get_labels_from_lut(lutfn):
-    lut = pd.read_csv(lutfn)
-    lblcol = lut.columns[0]
-    namecol = lut.columns[1]
-    # number of digits needed to represent all columns 
-    maxroi = len(str(np.max([int(a) for a in lut[lblcol]])))
-    roi_template = 'r{0:0' + str(maxroi) +'d}_{1}'
-    roi_names = [roi_template.format(i,n) for i,n in zip(lut[lblcol], lut[namecol])]
-    labels = list(lut[lblcol])
-    return labels, roi_names     
-
+    
 def main(argv):
     parser = buildArgsParser()
     args = parser.parse_args(argv)
     make_dir(args.outdir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
+    try:
+        run_roi_stats(args)
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
+    
+def run_roi_stats(args):
     # read lut if it exists
     labels = None
     roi_names = None
     if args.atlas_lut is not None:
-        labels, roi_names = get_labels_from_lut(args.atlas_lut)
+        # get atlas from lut 
+        lutfn = args.atlas_lut
+        lut = pd.read_csv(lutfn)
+        lblcol = lut.columns[0]
+        namecol = lut.columns[1]
+        # number of digits needed to represent all columns 
+        maxroi = len(str(np.max([int(a) for a in lut[lblcol]])))
+        roi_template = 'r{0:0' + str(maxroi) +'d}_{1}'
+        roi_names = [roi_template.format(i,n) for i,n in zip(lut[lblcol], lut[namecol])]
+        labels = list(lut[lblcol])
     cohort = pd.DataFrame(index = [a.strip() for a in open(args.subjectfile, 'r').readlines()])
     logging.info('Read subject IDs, n = {0}'.format(len(cohort)))
     logging.info('Scalar filename template: '+args.filename_template)

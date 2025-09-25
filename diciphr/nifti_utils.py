@@ -5,25 +5,15 @@ Created on Mon Jan 18 14:04:32 2016
 @author: parkerwi
 """
 
-import os, sys, shutil, logging, traceback
+import os, logging
 import nibabel as nib
 import numpy as np
-import scipy.ndimage
-from collections import OrderedDict
-from .utils import ( make_dir, make_temp_dir, which, 
-                ExecCommand, DiciphrException, logical_and, force_to_list )
+from diciphr.utils import ( which, TempDirManager, is_nifti_file, force_to_list, 
+                ExecCommand, ExecFSLCommand, DiciphrException, logical_and )
 
 ##############################################
-############   NIFTI FUNCTIONS  ##############
+########   NIFTI FILENAME FUNCTIONS  #########
 ##############################################
-def is_nifti_file(filename):
-    """Returns True if filename is a nifti file. """
-    try:
-        im = nib.Nifti1Image.from_filename(filename)
-    except:
-        return False
-    return True
-
 def strip_ext(filename):
     '''Strips a generic filename off a path. If extension is gz or bz2, will try a second round.'''
     ext1 = filename[::-1].split('.')[0][::-1]
@@ -80,7 +70,69 @@ def find_nifti_from_basename(prefix):
     if len(found) > 1: 
         raise DiciphrException('Found multiple nifti files from prefix {}'.format(prefix))
     return found[0]
+
+def match_nifti_filenames(directory, match_strings, diffusion=False, json=True):
+    """
+    Matches NIfTI files in a directory based on provided substrings.
+
+    Parameters:
+        directory (str): Path to the directory containing files.
+        match_strings (list): List of substrings to match in filenames.
+        diffusion (bool): If True, also returns matching .bval and .bvec files.
+        json (bool): If True, also returns matching .json files.
+
+    Returns:
+        dict: A dictionary containing:
+            - 'nifti_files': List of matched NIfTI file paths.
+            - 'bval_files': List of .bval file paths or None (if diffusion=True).
+            - 'bvec_files': List of .bvec file paths or None (if diffusion=True).
+            - 'json_files': List of .json file paths or None (if json=True).
+    """
+    nifti_files = []
+    json_files = []
+    bval_files = []
+    bvec_files = []
+    all_files = sorted(os.listdir(directory))
+    match_strings = force_to_list(match_strings)
+    for file in all_files:
+        if any(match in os.path.basename(file) for match in match_strings):
+            full_path = os.path.realpath(os.path.join(directory, file))
+            if is_nifti_file(full_path):
+                print(full_path)
+                nifti_files.append(full_path)          
+                filebase = strip_nifti_ext(full_path)
+                if diffusion:
+                    bvalfile = filebase+'.bval'
+                    bvecfile = filebase+'.bvec'
+                    if os.path.exists(bvalfile) and os.path.exists(bvecfile):
+                        bval_files.append(bvalfile)
+                        bvec_files.append(bvecfile)
+                    else:
+                        bval_files.append(None)
+                        bvec_files.append(None)
+                if json:
+                    json_file = filebase+'.json'
+                    json_files.append(json_file if os.path.exists(json_file) else None)
     
+    result = {'nifti_files': nifti_files}
+    if diffusion:
+        result['bval_files'] = bval_files
+        result['bvec_files'] = bvec_files
+    if json:
+        result['json_files'] = json_files
+    return result 
+ 
+def json_files_from_niftis(dwi_filenames):
+    json_files = [ strip_nifti_ext(fn)+'.json' for fn in dwi_filenames ]
+    missing_files = [f for f in json_files if not os.path.exists(f)]
+    if missing_files:
+        #raise FileNotFoundError(f"JSON files are missing: {missing_files}")
+        json_files = []
+    return json_files 
+                       
+##############################################
+#########   NIFTI1 IMAGE FUNCTIONS  ##########
+##############################################
 def nifti_image(data, affine, header=None, dtype=None, intent=0, **kwargs):
     '''Create a Nifti1Image instance. Casts data to a dtype if given.
     
@@ -102,9 +154,7 @@ def nifti_image(data, affine, header=None, dtype=None, intent=0, **kwargs):
     '''
     if dtype is not None:
         data=data.astype(dtype)
-    if data.dtype == np.dtype('bool'):
-        data = data.astype(np.int16)
-    im=nib.Nifti1Image(data, affine, header=header)
+    im = nib.Nifti1Image(data, affine, header=header)
     im.header.set_sform(affine)
     im.header.set_qform(affine)
     im.header.set_data_dtype(data.dtype)
@@ -114,17 +164,36 @@ def nifti_image(data, affine, header=None, dtype=None, intent=0, **kwargs):
     im.update_header()
     return im
     
-def read_nifti(filename, dtype=None):
-    '''Wrapper function for nibabel.load'''
+def read_nifti(filename, dtype=None, lazy_load=True):
+    '''Wrapper function for nibabel.load which also loads the data into memory if lazy_load is False
+    Parameters 
+    ----------
+    filename : str
+        Image filename
+    nifti_im : Optional[nibabel.Nifti1Image]
+        A nibabel Nifti1Image object.
+    data : Optional[numpy.ndarray]
+        A numpy array of image data. 
+        To use, nifti_im should be None, and affine is required. 
+    affine : Optional[numpy.ndarray]
+        An affine transformation for nifti header. 
+        
+    Returns
+    -------
+    nibabel.Nifti1Image
+    '''
     logging.debug('diciphr.utils.read_nifti')
-    im=nib.load(filename)
+    im = nib.load(filename)
     if dtype:
-        data = im.get_data().astype(dtype)
+        data = im.get_fdata().astype(dtype)
         im = nib.Nifti1Image(data, im.affine, im.header)
         im.header.set_data_dtype(dtype)
+    elif not lazy_load:
+        data = im.get_fdata()
+        im = nib.Nifti1Image(data, im.affine, im.header.copy())
     return im
     
-def write_nifti(filename,nifti_im=None,data=None,affine=None):
+def write_nifti(filename, nifti_im=None, data=None, affine=None):
     '''Wrapper function for nibabel.save
     
     Parameters 
@@ -149,6 +218,10 @@ def write_nifti(filename,nifti_im=None,data=None,affine=None):
         raise DiciphrException('Filename {} is not a valid Nifti path!'.format(filename))
     if nifti_im is None:
         nifti_im = nifti_image(data, affine)
+    if affine is None:
+        affine = nifti_im.header.get_best_affine()
+    nifti_im.set_qform(affine, code=1)
+    nifti_im.set_sform(affine, code=1)
     nifti_im.to_filename(filename)
     logging.info("Writing NiFTI to file {}".format(filename))
     return filename
@@ -171,6 +244,9 @@ def read_gradients(bval_file, bvec_file):
     bvals = np.loadtxt(bval_file)
     bvals = bvals.reshape((1,np.size(bvals)))                       
     bvecs = np.loadtxt(bvec_file)
+    # if a 3d volume bvecs will be shape (3,) and bvals will be shape (1,1)
+    if len(bvecs.shape) == 1 and len(bvecs) == 3:
+        bvecs = bvecs.reshape((3,1))      
     return bvals, bvecs
 
 def is_valid_dwi(dwi_im, bvals, bvecs, raise_if_invalid=False):
@@ -179,8 +255,6 @@ def is_valid_dwi(dwi_im, bvals, bvecs, raise_if_invalid=False):
     DWI time dimension (N) must match bvals and bvecs 2nd dimensions. 
     bvals must be of shape (1,N)
     bvecs must be of shape (3,N)
-    bvals should contain zeros, and where bvals is equal to zero, bvecs must also be equal to zero. 
-    If bvals does not contain zeros, gives a warning.
 
     Parameters 
     ----------
@@ -197,18 +271,17 @@ def is_valid_dwi(dwi_im, bvals, bvecs, raise_if_invalid=False):
     -------
     bool
     '''
-    bvecs_n=bvecs.shape[1]
-    bvecs_dim=bvecs.shape[0]
-    bvals_n=bvals.shape[1]
-    bvals_dim=bvals.shape[0]
-    dwi_n=dwi_im.shape[-1]
+    bvecs_n = bvecs.shape[1]
+    bvecs_dim = bvecs.shape[0]
+    bvals_n = bvals.shape[1]
+    bvals_dim = bvals.shape[0]
+    dwi_n = 1 if len(dwi_im.shape)<4 else dwi_im.shape[-1]
     dimensions_valid = (dwi_n == bvals_n) and (dwi_n == bvecs_n) and (bvecs_dim == 3) and (bvals_dim == 1)
-    ret = dimensions_valid
-    if raise_if_invalid and not ret:
+    if raise_if_invalid and not dimensions_valid:
         raise DiciphrException('Not a valid diffusion nifti and bval/bvec')
-    return ret
+    return dimensions_valid
     
-def read_dwi(filename, bval_file=None, bvec_file=None):
+def read_dwi(filename, bval_file=None, bvec_file=None, force=False):
     '''Read a nifti file and associated bval and bvec files.
     
     Parameters 
@@ -219,20 +292,30 @@ def read_dwi(filename, bval_file=None, bvec_file=None):
         Path to bval text file. If not provided, path will be inferred from the dwi filename.
     bvec_file : Optional[str]
         Path to bval text file. If not provided, path will be inferred from the dwi filename.
-        
+    force : Optional[bool]
+        If True, and bval/bvec files cannot be found, will return bvals and bvecs of all zeros. 
+        Used for reading extra B0s for distortion correction with TOPUP which may lack accompanying bval/bvec files. 
     Returns
     -------
     tuple
         A tuple of dwi_im (nibabel.Nifti1Image), bvals, bvecs (numpy.ndarray)
     '''
     logging.debug('diciphr.diffusion.read_dwi')
-    dwi_im = nib.load(filename)
+    dwi_im = read_nifti(filename)
     if bval_file is None:
         bval_file = strip_nifti_ext(filename)+'.bval'
     if bvec_file is None:
         bvec_file = strip_nifti_ext(filename)+'.bvec'
     if not (os.path.exists(bval_file) and os.path.exists(bvec_file)):
-        raise DiciphrException('Cannot find bval/bvec files for DWI image')
+        if force:
+            if len(dwi_im.shape) ==3:
+                N = 1 
+            else:
+                N = dwi_im.shape[-1]
+            bvals = np.zeros((1,N))
+            bvecs = np.zeros((3,N))
+        else:
+            raise DiciphrException('Cannot find bval/bvec files for DWI image')
     else:
         bvals, bvecs = read_gradients(bval_file, bvec_file) 
     is_valid_dwi(dwi_im, bvals, bvecs, True)
@@ -265,7 +348,7 @@ def write_dwi(filename,dwi_im,bvals,bvecs):
     np.savetxt(bvecfile,bvecs,fmt="%0.8f")
     
 def intersection_mask(nifti_files):
-    return nifti_image(logical_and(*[nib.load(f).get_data() > 0])*1, nib.load(nifti_files)[0].affine)
+    return nifti_image(logical_and(*[(read_nifti(f).get_fdata() > 0) for f in nifti_files])*1, read_nifti(nifti_files[0]).affine)
     
 ###############################################
 ############  NIFTI Orientation  ##############
@@ -293,7 +376,7 @@ def reorient_nifti(nifti_im, orientation = 'LPS'):
         raise DiciphrException('Not a valid orientation: {}'.format(orientation))
     
     nii_affine = nifti_im.affine
-    nii_data = nifti_im.get_data()
+    nii_data = nifti_im.get_fdata()
     new_orient_code = tuple(s.upper() for s in orientation)
     orig_orient_code = nib.aff2axcodes(nii_affine)
     trans_ornt = _get_transformation_ornt(orig_orient_code, new_orient_code)
@@ -432,47 +515,56 @@ def resample_image(nifti_im, voxelsizes=None, interp='Linear', master=None, work
         raise DiciphrException('interp must be one of {}.'.format(' '.join(allowed_interps)))
     if voxelsizes is None and master is None:
         raise DiciphrException('One of voxelsizes or master must be provided')
-    # tensor input - need to implement log-Euclidean interpolation. 
-    if nifti_im.header['intent_code'] == 1005:
-        raise DiciphrException('Tensor input not enabled')
-    # 4d input - split into 3d and resample each 
-    if len(nifti_im.header.get_zooms()) == 4:
-        split_images = split_image(nifti_im, dimension='t')
-        resampled_images = []
-        for im in split_images:
-            res = resample_image(im, voxelsizes=voxelsizes, interp=interp, master=master)
-            resampled_images.append(res)
-        result_im = concatenate_niftis(*resampled_images)
-    elif len(nifti_im.header.get_zooms()) == 3:
-        if workdir is None:
-            tmpdir = make_temp_dir(prefix='resample')
-        else:
-            tmpdir = workdir 
-            os.makedirs(tmpdir, exist_ok=True)
-        nifti_im.to_filename(os.path.join(tmpdir, 'input.nii.gz'))
-        try:
+    with TempDirManager(prefix="resample_image") as manager:
+        tmpdir = manager.path()
+        write_nifti(os.path.join(tmpdir, 'input.nii.gz'), nifti_im)        
+        applyxfm_cmd = [applyxfm_exe, '-d', '3', 
+                        '-i', os.path.join(tmpdir, 'input.nii.gz'),
+                        '-o', os.path.join(tmpdir, 'output.nii.gz'), 
+                        '-r', os.path.join(tmpdir, 'ref.nii.gz'),
+                        '-n', interp, '--float','-v','1']        
+        if len(nifti_im.header.get_zooms()) > 3:
+            # 4d or tensor input - resample first and resample rest 
+            if nifti_im.header['intent_code'] == 1007:
+                # to-do test antsapplytransform method vs log resampling 
+                logging.info("Vector image type")
+                applyxfm_cmd.extend(['-e', '1'])
+            elif nifti_im.header['intent_code'] == 1005:
+                logging.info("Tensor image type")
+                applyxfm_cmd.extend(['-e', '2'])
+            else:
+                logging.info("Timeseries image type")
+                applyxfm_cmd.extend(['-e', '3'])
             if master is None:
-                # 3d input - without master_im 
-                # create template image 
-                resample_cmd = [resample_exe, '3', os.path.join(tmpdir, 'input.nii.gz'), 
-                    os.path.join(tmpdir, 'regrid.nii.gz'), str(voxelsizes[0])+'x'+str(voxelsizes[1])+'x'+str(voxelsizes[2])]
-                ExecCommand(resample_cmd).run()
-                regrid_im = nib.load(os.path.join(tmpdir, 'regrid.nii.gz'))
-                regrid_im = nifti_image(regrid_im.get_fdata(), regrid_im.affine, regrid_im.header)
-                result_im = resample_image(nifti_im, interp=interp, master=regrid_im, workdir=tmpdir)
+                first_img = split_image(nifti_im, dimension='t', index=0, squeeze=True)
+                write_nifti(os.path.join(tmpdir, 'first.nii.gz'), first_img)
+                voxstring = 'x'.join(map(str, voxelsizes))
+                logging.info(f"Resample reference image to {voxstring}")
+                resample_cmd = [resample_exe, '3', os.path.join(tmpdir, 'first.nii.gz'), 
+                    os.path.join(tmpdir, 'ref.nii.gz'), 
+                    voxstring]
+                ExecCommand(resample_cmd).run()            
             else:
                 # 3d input - with master 
-                master.to_filename(os.path.join(tmpdir, 'ref.nii.gz'))
-                resample_cmd = [applyxfm_exe, '-d', '3', '-i', os.path.join(tmpdir, 'input.nii.gz'),
-                        '-o', os.path.join(tmpdir, 'output.nii.gz'), '-r', os.path.join(tmpdir, 'ref.nii.gz'),
-                        '-n', interp, '--float','-v','1']
-                ExecCommand(resample_cmd).run()
-                result_im = nib.load(os.path.join(tmpdir, 'output.nii.gz'))
-                result_im = nifti_image(result_im.get_fdata(), result_im.affine, result_im.header)
-        finally:
-            if workdir is None:
-                shutil.rmtree(tmpdir)
-    return result_im 
+                write_nifti(os.path.join(tmpdir, 'ref.nii.gz'), master)
+            
+        elif len(nifti_im.header.get_zooms()) == 3:
+            logging.info("Scalar image type")
+            if master is None:
+                # 3d input - without master_im, create template image 
+                voxstring = 'x'.join(map(str, voxelsizes))
+                logging.info(f"Resample reference image to {voxstring}")
+                resample_cmd = [resample_exe, '3', os.path.join(tmpdir, 'input.nii.gz'), 
+                    os.path.join(tmpdir, 'ref.nii.gz'), 
+                    voxstring]
+                ExecCommand(resample_cmd).run()   
+            else:
+                # 3d input - with master 
+                write_nifti(os.path.join(tmpdir, 'ref.nii.gz'), master)
+            
+        ExecCommand(applyxfm_cmd).run()
+        result_im = read_nifti(os.path.join(tmpdir, 'output.nii.gz'), lazy_load=False)
+    return result_im
     
 def erode_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=True, erode_away_from_border=True):
     '''Erode a nifti image with scipy or with fsl.
@@ -513,7 +605,7 @@ def erode_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=Tr
     #pad by 1 voxel so that voxels touching image boundary are eroded. 
     if erode_away_from_border: 
         nifti_im = crop_pad_image(nifti_im, x_adjust=[1,1], y_adjust=[1,1], z_adjust=[1,1])
-    data = nifti_im.get_data()
+    data = nifti_im.get_fdata()
     affine = nifti_im.affine
     binarized_data = np.zeros(data.shape, dtype='i4')
     binarized_data[data > 0] = 1 
@@ -525,20 +617,21 @@ def erode_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=Tr
     elif kernel in ['sphere','gauss','box']:
         if kernel == 'box' and not _is_odd_pos(kernel_size):
             raise DiciphrException('Kernel size needs to be a positive odd integer')
-        tmpdir = make_temp_dir(prefix='fsl_erosion')
-        tmp_nii = os.path.join(tmpdir,'in.nii')
-        tmp_ero_out = os.path.join(tmpdir,'out.nii')
-        input_im = nib.Nifti1Image(binarized_data, affine)
-        input_im.to_filename(tmp_nii)
-        cmd = ['fslmaths',tmp_nii,'-kernel',kernel,str(kernel_size),'-ero',tmp_ero_out]
-        ExecCommand(cmd,environ={'FSLOUTPUTTYPE':'NIFTI'}).run()
-        tmp_im = nib.load(tmp_ero_out)
-        eroded_data = tmp_im.get_data()
+        with TempDirManager(prefix='fsl_erosion') as manager: 
+            tmpdir = manager.path() 
+            tmp_nii = os.path.join(tmpdir,'in.nii')
+            tmp_ero_out = os.path.join(tmpdir,'out.nii')
+            input_im = nifti_image(binarized_data, affine)
+            input_im.to_filename(tmp_nii)
+            cmd = ['fslmaths',tmp_nii,'-kernel',kernel,str(kernel_size),'-ero',tmp_ero_out]
+            ExecFSLCommand(cmd).run()
+            tmp_im = read_nifti(tmp_ero_out)
+            eroded_data = tmp_im.get_fdata()
     if not binarize:
         eroded_data = eroded_data * data
     else:
         eroded_data = eroded_data.astype('i4')
-    out_im = nib.Nifti1Image(eroded_data, affine)
+    out_im = nifti_image(eroded_data, affine)
     out_im.header.set_sform(affine)
     out_im.header.set_qform(affine)
     out_im.update_header()
@@ -585,28 +678,29 @@ def dilate_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=T
         if not _is_odd_pos(kernel_size):
             raise DiciphrException('Kernel size needs to be a positive odd integer')
         nn_kernel = generate_binary_structure(3,int(kernel[-1]))
-        data = nifti_im.get_data()
+        data = nifti_im.get_fdata()
         binarized_data = np.zeros(data.shape, dtype=np.int8)
         binarized_data[data > 0] = 1 
         _dtype = nifti_im.header.get_data_dtype()
         dilated_data = binary_dilation(binarized_data, nn_kernel, iterations=iterations).astype(_dtype)
-        out_im = nib.Nifti1Image(dilated_data, nifti_im.affine)
+        out_im = nifti_image(dilated_data, nifti_im.affine)
     elif kernel in ['sphere','gauss','box']:
         dil_mode='-dilM'
         if mode_dilation and not binarize:
             dil_mode = '-dilD'
-        tmpdir = make_temp_dir(prefix='fsl_dilation')
-        tmp_nii = os.path.join(tmpdir,'in.nii')
-        tmp_dil_out = os.path.join(tmpdir,'out.nii')
-        nifti_im.to_filename(tmp_nii)
-        cmd = ['fslmaths',tmp_nii,'-kernel',kernel,str(kernel_size),dil_mode,tmp_dil_out]
-        ExecCommand(cmd,environ={'FSLOUTPUTTYPE':'NIFTI'}).run()
-        tmp_im = nib.load(tmp_dil_out)
-        out_im = nib.Nifti1Image(tmp_im.get_data(), tmp_im.affine, tmp_im.header)
+        with TempDirManager(prefix='fsl_dilation') as manager:
+            tmpdir = manager.path()
+            tmp_nii = os.path.join(tmpdir,'in.nii')
+            tmp_dil_out = os.path.join(tmpdir,'out.nii')
+            write_nifti(tmp_nii, nifti_im)
+            cmd = ['fslmaths',tmp_nii,'-kernel',kernel,str(kernel_size),dil_mode,tmp_dil_out]
+            ExecFSLCommand(cmd).run()
+            tmp_im = read_nifti(tmp_dil_out)
+            out_im = nifti_image(tmp_im.get_fdata(), tmp_im.affine, tmp_im.header)
     return out_im
   
 def cut_region(roi_img, k):
-    '''Cuts a region into k sub-regions.
+    '''Cuts a region into k sub-regions with K-means clustering.
     
     Parameters
     ----------
@@ -621,13 +715,10 @@ def cut_region(roi_img, k):
     '''
     from scipy.cluster.vq import kmeans2
     affine = roi_img.get_affine()
-    roi = roi_img.get_data()
+    roi = roi_img.get_fdata()
     logging.info("Perform clustering...")
     indices = np.array(np.nonzero(roi), dtype=np.float64).T
     codebook, label = kmeans2(indices, k)
-    hdr = nib.Nifti1Header()
-    hdr.set_qform(affine)
-    hdr.set_sform(affine)
     mask_imgs = []
     for i in range(k):
         mask = np.zeros(roi.shape, dtype=np.uint8)
@@ -642,11 +733,21 @@ def cut_region(roi_img, k):
 ############################################
 ############  Other Utilities  #############
 ############################################    
-def threshold_image(nifti_im, threshold_value):
-    logging.info('Calculating mask with threshold at {}.'.format(threshold_value))
-    thresh_data = (nifti_im.get_data() > float(threshold_value)).astype(np.int16)
-    mask_im = nib.Nifti1Image(thresh_data, nifti_im.affine)
-    return mask_im 
+def threshold_image(nifti_img, threshold_value=0):
+    data = nifti_img.get_fdata()
+    data_t = (data > threshold_value)*1 
+    img = nifti_image(data_t, nifti_img.affine)
+    return img 
+
+def smooth_image(nifti_img, fwhm):
+    with TempDirManager(prefix='smooth_image') as manager:
+        tmpdir = manager.path()
+        write_nifti(os.path.join(tmpdir, 'input.nii.gz'), nifti_img)
+        cmd = ['fslmaths', os.path.join(tmpdir, 'input.nii.gz'),
+               '-s', str(fwhm), os.path.join(tmpdir, 'output.nii.gz')]
+        ExecFSLCommand(cmd).run()
+        output_img = read_nifti(os.path.join(tmpdir, 'output.nii.gz'), lazy_load=False)
+    return output_img 
     
 def flirt_register(input_im, ref_im, 
                     cost='normmi', searchcost='normmi', dof=12, coarsesearch=60, finesearch=18, 
@@ -712,31 +813,30 @@ def flirt_register(input_im, ref_im,
             search_ranges[idx] = (_s1, _s2)
         except:
             raise DiciphrException('search range must be a list of two numbers') 
-    #begin
-    tmpdir = make_temp_dir(prefix='fsl_flirt')
-    input_filename = os.path.join(tmpdir, 'input.nii')
-    ref_filename = os.path.join(tmpdir, 'ref.nii')
-    outmat_filename = os.path.join(tmpdir, 'output.mat')
-    output_filename = os.path.join(tmpdir, 'output.nii')
-    logging.debug('Writing inputs to tmpdir {}'.format(tmpdir))
-    input_im.to_filename(input_filename)
-    ref_im.to_filename(ref_filename)
-    cmd = ['flirt', '-in', input_filename, '-ref', ref_filename, 
-           '-omat', outmat_filename, '-out', output_filename, 
-           '-cost', cost, '-searchcost', searchcost, '-dof', dof, '-interp', interp, 
-           '-coarsesearch', coarsesearch, '-finesearch', finesearch, 
-           '-searchrx', search_ranges[0][0], search_ranges[0][1],
-           '-searchrx', search_ranges[1][0], search_ranges[1][1], 
-           '-searchrx', search_ranges[2][0], search_ranges[2][1]]
-    cmd = list(map(str,cmd)) 
-    logging.debug(' '.join(cmd))
-    returncode, stdout, stderr = ExecCommand(cmd, environ={'FSLOUTPUTTYPE':'NIFTI'}).run()
-    if returncode != 0:
-        raise DiciphrException('Error encountered while runnig flirt')
-    out_mat = np.loadtxt(outmat_filename).astype(np.float32)
-    tmp_im = nib.load(output_filename)
-    out_im = nib.Nifti1Image(tmp_im.get_data(), tmp_im.affine, tmp_im.header)
-    shutil.rmtree(tmpdir)
+    with TempDirManager(prefix='fsl_flirt') as manager:
+        tmpdir = manager.path()
+        input_filename = os.path.join(tmpdir, 'input.nii.gz')
+        ref_filename = os.path.join(tmpdir, 'ref.nii')
+        outmat_filename = os.path.join(tmpdir, 'output.mat')
+        output_filename = os.path.join(tmpdir, 'output.nii.gz')
+        logging.debug('Writing inputs to tmpdir {}'.format(tmpdir))
+        input_im.to_filename(input_filename)
+        ref_im.to_filename(ref_filename)
+        cmd = ['flirt', '-in', input_filename, '-ref', ref_filename, 
+               '-omat', outmat_filename, '-out', output_filename, 
+               '-cost', cost, '-searchcost', searchcost, '-dof', dof, '-interp', interp, 
+               '-coarsesearch', coarsesearch, '-finesearch', finesearch, 
+               '-searchrx', search_ranges[0][0], search_ranges[0][1],
+               '-searchrx', search_ranges[1][0], search_ranges[1][1], 
+               '-searchrx', search_ranges[2][0], search_ranges[2][1]]
+        cmd = list(map(str,cmd)) 
+        returncode, stdout, stderr = ExecFSLCommand(cmd).run()
+        if returncode != 0:
+            raise DiciphrException('Error encountered while runnig flirt')
+        out_mat = np.loadtxt(outmat_filename).astype(np.float32)
+        tmp_im = read_nifti(output_filename)
+        out_im = nifti_image(tmp_im.get_fdata(), tmp_im.affine, tmp_im.header)
+    
     if return_mat and return_im: 
         return (out_im, out_mat)
     elif return_mat:
@@ -746,7 +846,64 @@ def flirt_register(input_im, ref_im,
         
 def write_flirt_matrix_to_file(flirt_mat, filename):
     np.savetxt(filename, flirt_mat, fmt='%0.12f')
-   
+
+def bet2_mask_nifti(nifti_im,  f=0.2, g=0.0, erode_iterations=0, return_brain=False):
+    '''Mask a nifti image with bet2. Optionally erode the mask
+    
+    Parameters
+    ----------
+    nifti_im : nibabel.Nifti1Image
+        A nifti image to be masked using fsl bet2
+    f : float
+        Number to pass to bet2 fractional intensity threshold.
+        "fractional intensity threshold (0->1); default=0.5; 
+        smaller values give larger brain outline estimates"
+    g : float
+        Number to pass to bet2 vertical gradient.
+        " vertical gradient in fractional intensity threshold (-1->1); default=0; 
+        positive values give larger brain outline at bottom, smaller at top"
+    erode_iterations : int
+        If greater than zero, result of bet2 will be eroded with
+        this many iterations of erosion using scipy's binary_erosion
+    return_brain : Optional[bool]
+        If True, return the brain extracted image in addition to the mask. 
+    Returns
+    -------
+    nibabel.Nifti1Image
+        The mask image
+    '''
+    def erode_mask(nifti_im,connectivity=1,iterations=1):
+        from scipy.ndimage.morphology import binary_erosion, generate_binary_structure
+        structure = generate_binary_structure(3,connectivity)
+        data = (nifti_im.get_fdata() > 0).astype(np.int16)
+        data_eroded = binary_erosion(data, structure, iterations=iterations).astype(np.int16)
+        out_im = nifti_image(data_eroded, nifti_im.affine)
+        return out_im
+        
+    with TempDirManager(prefix='bet2_mask_nifti') as manager:
+        tmpdir = manager.path()
+        tmp_filename = os.path.join(tmpdir,'input.nii.gz')
+        mask_tmp_betprefix = os.path.join(tmpdir,'input')
+        mask_tmp_fileprefix = os.path.join(tmpdir,'input_mask')
+        mask_ero_tmp_fileprefix = os.path.join(tmpdir,'input_mask_ero')
+        nifti_im.to_filename(tmp_filename)
+        cmd = ['bet2',tmp_filename,mask_tmp_betprefix,'-nm','-f',str(float(f)),'-g',str(float(g))]
+        ExecFSLCommand(cmd).run()
+        mask_tmp_filename = mask_tmp_fileprefix+'.nii.gz'
+        mask_im = read_nifti(mask_tmp_filename)
+        if erode_iterations > 0: 
+            mask_im = erode_mask(mask_im, iterations = erode_iterations)
+        else:
+            #make a new image object to load data into memory so tmpdir can be deleted
+            #also removes filename attribute of header which refers to a dir which will be removed
+            mask_im = nifti_image(mask_im.get_fdata(), mask_im.affine, mask_im.header)
+        if return_brain:
+            brain_im = nifti_image(nifti_im.get_fdata() * mask_im.get_fdata(), nifti_im.affine, nifti_im.header)
+    if return_brain:
+        return brain_im, mask_im
+    else:
+        return mask_im
+
 def fast_segmentation(nifti_im, type='t1'):
     '''Runs fast segmentation and returns csf, gm, and wm partial volume maps. 
     
@@ -767,73 +924,25 @@ def fast_segmentation(nifti_im, type='t1'):
         type_value = '2'
     elif type.lower() == 'pd':
         type_value = '3'
-    tmpdir = make_temp_dir(prefix='fast_segmentation')
-    try:
+    with TempDirManager(prefix='fast_segmentation') as manager:
+        tmpdir = manager.path()
         tmp_filename = os.path.join(tmpdir,'input.nii.gz')
         tmp_prefix = os.path.join(tmpdir,'fast')
         nifti_im.to_filename(tmp_filename)
         cmd = ['fast', '-t',type_value, '-o',tmp_prefix, tmp_filename]
-        ExecCommand(cmd).run()
-        csf_filename = find_nifti_from_prefix(tmp_prefix+'_pve_0')
-        gm_filename = find_nifti_from_prefix(tmp_prefix+'_pve_1')
-        wm_filename = find_nifti_from_prefix(tmp_prefix+'_pve_2')
-        csf_result_im = nib.load(csf_filename)
-        gm_result_im = nib.load(gm_filename)
-        wm_result_im = nib.load(csf_filename)
+        ExecFSLCommand(cmd).run()
+        csf_filename = tmp_prefix+'_pve_0.nii.gz'
+        gm_filename = tmp_prefix+'_pve_1.nii.gz'
+        wm_filename = tmp_prefix+'_pve_2.nii.gz'
+        csf_result_im = read_nifti(csf_filename)
+        gm_result_im = read_nifti(gm_filename)
+        wm_result_im = read_nifti(wm_filename)
         #make a new image object to load data into memory so tmpdir can be deleted
         #also removes filename attribute of header which refers to a dir which will be removed
-        csf_out_im = nifti_image(csf_result_im.get_data(), csf_result_im.affine, csf_result_im.header)
-        gm_out_im = nifti_image(gm_result_im.get_data(), gm_result_im.affine, gm_result_im.header)
-        wm_out_im = nifti_image(wm_result_im.get_data(), wm_result_im.affine, wm_result_im.header)
-    except Exception as err:
-        raise err
-    finally:
-        shutil.rmtree(tmpdir)
+        csf_out_im = nifti_image(csf_result_im.get_fdata(), csf_result_im.affine, csf_result_im.header)
+        gm_out_im = nifti_image(gm_result_im.get_fdata(), gm_result_im.affine, gm_result_im.header)
+        wm_out_im = nifti_image(wm_result_im.get_fdata(), wm_result_im.affine, wm_result_im.header)
     return csf_out_im, gm_out_im, wm_out_im
-    
-def bet2_mask_nifti(nifti_im, f=0.2, erode=True):
-    '''Mask a nifti image with bet2. Optionally erode the mask by a 2mm sphere
-    
-    Parameters
-    ----------
-    nifti_im : nibabel.Nifti1Image
-        A nifti image to be masked using fsl bet2
-    f : float
-        fractional intensity threshold (0->1)
-    erode : bool
-        If true, result of bet2 will be eroded with
-        fslmaths -ero -kernel -sphere 2 
-    
-    Returns
-    -------
-    nibabel.Nifti1Image
-        The mask image
-    '''
-    tmpdir = make_temp_dir(prefix='bet2_mask_nifti')
-    try:
-        f = float(f)
-        tmp_filename = os.path.join(tmpdir,'input.nii.gz')
-        mask_tmp_betprefix = os.path.join(tmpdir,'input')
-        mask_tmp_fileprefix = os.path.join(tmpdir,'input_mask')
-        mask_ero_tmp_fileprefix = os.path.join(tmpdir,'input_mask_ero')
-        nifti_im.to_filename(tmp_filename)
-        cmd = ['bet2',tmp_filename,mask_tmp_betprefix,'-nm','-f',str(f)]
-        ExecCommand(cmd).run()
-        if erode:
-            cmd = ['fslmaths',mask_tmp_fileprefix,'-ero','-kernel','sphere','2',mask_ero_tmp_fileprefix]
-            ExecCommand(cmd).run()
-            result_filename=find_nifti_from_prefix(mask_ero_tmp_fileprefix)
-        else:
-            result_filename=find_nifti_from_prefix(mask_tmp_fileprefix)
-        result_im = nib.load(result_filename)
-        #make a new image object to load data into memory so tmpdir can be deleted
-        #also removes filename attribute of header which refers to a dir which will be removed
-        out_im = nifti_image(result_im.get_data(),result_im.affine,result_im.header)
-    except Exception as err:
-        raise err
-    finally:
-        shutil.rmtree(tmpdir)
-    return out_im
     
 def extract_roi(atlas_im, roi_index):
     '''
@@ -841,14 +950,14 @@ def extract_roi(atlas_im, roi_index):
     '''
     if not 'int' in str(atlas_im.get_data_dtype()):
         raise DiciphrException('Will not try to extract ROI from non-integer image')
-    atlas_data = atlas_im.get_data()
+    atlas_data = atlas_im.get_fdata()
     roi_data = (atlas_data==int(roi_index)).astype(atlas_im.get_data_dtype())
     roi_im = nifti_image(roi_data, atlas_im.affine, atlas_im.header)
     return roi_im
     
 def center_of_mass_atlas(atlas_im, labels=[], return_voxel_coordinates=False):
     from collections import OrderedDict
-    atlas_data = atlas_im.get_data().astype(np.int16)
+    atlas_data = atlas_im.get_fdata().astype(np.int16)
     atlas_affine = atlas_im.affine
     if not labels:
         labels = np.unique(atlas_data[atlas_data>0])
@@ -865,7 +974,7 @@ def center_of_mass_atlas(atlas_im, labels=[], return_voxel_coordinates=False):
             coordinate_coms[label] = [ int(np.round(x_com)), int(np.round(y_com)), int(np.round(z_com)) ]
     return coordinate_coms  
   
-def split_image(nifti_im, dimension='t', slice_index=None):
+def split_image(nifti_im, dimension='t', index=None, squeeze=False):
     '''Split an image along a given dimension and save to output_filebase.
     
     Parameters
@@ -874,8 +983,10 @@ def split_image(nifti_im, dimension='t', slice_index=None):
             The nifti image 
         dimension : Optional[str]
             The dimension to split, defaults to 't', must be one of ( 't', 'x', 'y', 'z' )
-        slice_index : Optional[int]
+        index : Optional[int]
             If provided, will save only this slice number and not all slices.
+        squeeze : Optional[bool]
+            If provided, will apply numpy squeeze to data 
     Returns
     -------
         list
@@ -886,44 +997,38 @@ def split_image(nifti_im, dimension='t', slice_index=None):
         raise DiciphrException('dimension argument must be one of ( t, x, y, z )')
     if _dimensions.index(dimension) + 1 > len(nifti_im.shape):
         raise DiciphrException('dimension argument out of range for image')
-    data = nifti_im.get_data()
-    affine = nifti_im.affine
-    header = nifti_im.header
-    out_images=[]
-    if dimension == 'z':
-        if slice_index is None:
-            for idx in range(nifti_im.shape[2]):
-                slice_im = nifti_image(data[:,:,idx,...], affine, header)
-                out_images.append(slice_im)
-        else:   
-            slice_im = nifti_image(data[:,:,slice_index,...], affine, header)
-            return slice_im 
-    elif dimension == 'y':
-        if slice_index is None:
-            for idx in range(nifti_im.shape[1]):
-                slice_im = nifti_image(data[:,idx,...], affine, header)
-                out_images.append(slice_im)
-        else:   
-            slice_im = nifti_image(data[:,slice_index,...], affine, header)
-            return slice_im 
-    elif dimension == 'x':
-        if slice_index is None:
-            for idx in range(nifti_im.shape[0]):
-                slice_im = nifti_image(data[idx,...], affine, header)
-                slice_im = nifti_image(data[idx,...], affine, header)
-                out_images.append(slice_im)
-        else:   
-            slice_im = nifti_image(data[slice_index,...], affine, header)
-            return slice_im
-    elif dimension == 't':
-        if slice_index is None:
-            for idx in range(nifti_im.shape[-1]):
-                slice_im = nifti_image(data[...,idx], affine, header)
-                out_images.append(slice_im)
-        else:   
-            slice_im = nifti_image(data[...,slice_index], affine, header)
-            return slice_im 
-    return out_images
+    data = nifti_im.get_fdata()
+    affine = nifti_im.affine.copy()
+    header = nifti_im.header.copy()
+    if index is None:
+        # Returns all slices as a list 
+        if dimension == 'z':
+            slicedata = [ data[:,:,i,...] for i in range(nifti_im.shape[2]) ]
+        elif dimension == 'y':
+            slicedata = [ data[:,i,...] for i in range(nifti_im.shape[1]) ]
+        elif dimension == 'x':
+            slicedata = [ data[i,...] for i in range(nifti_im.shape[0]) ]
+        elif dimension == 't':
+            slicedata = [ data[...,i] for i in range(nifti_im.shape[-1]) ]
+            header.set_intent(0)
+        if squeeze:
+            return [ nifti_image(np.squeeze(slc), affine, header) for slc in slicedata ]
+        else:
+            return [ nifti_image(slc, affine, header) for slc in slicedata ]
+    else:
+        # Returns only the desired slice 
+        if dimension == 'z':
+            slicedata = data[:,:,index,...] 
+        elif dimension == 'y':
+            slicedata = data[:,index,...] 
+        elif dimension == 'x':
+            slicedata = data[index,...] 
+        elif dimension == 't':
+            slicedata = data[...,index] 
+            header.set_intent(0)
+        if squeeze:
+            slicedata = np.squeeze(slicedata)
+        return nifti_image(slicedata, affine, header)
     
 def crop_pad_image(nifti_im, x_adjust=[0,0], y_adjust=[0,0], z_adjust=[0,0]):
     '''Crop or pad a Nifti image.
@@ -963,7 +1068,7 @@ def crop_pad_image(nifti_im, x_adjust=[0,0], y_adjust=[0,0], z_adjust=[0,0]):
     x_range_old = [max([0,-1*x_adjust[0]]), max([0,-1*x_adjust[0]]) + x_range_new[1]-x_range_new[0]]
     y_range_old = [max([0,-1*y_adjust[0]]), max([0,-1*y_adjust[0]]) + y_range_new[1]-y_range_new[0]]
     z_range_old = [max([0,-1*z_adjust[0]]), max([0,-1*z_adjust[0]]) + z_range_new[1]-z_range_new[0]]
-    orig_data = nifti_im.get_data()
+    orig_data = nifti_im.get_fdata()
     new_data = np.zeros(ndims,nifti_im.get_data_dtype())
     #copy the data over...
     if len(ndims) == 3:
@@ -978,53 +1083,58 @@ def crop_pad_image(nifti_im, x_adjust=[0,0], y_adjust=[0,0], z_adjust=[0,0]):
     new_im.update_header()
     return new_im
     
-def check_affines_and_shapes_match(*images):
+def check_affines_and_shapes_match(*images, raise_exception=False):
     logging.debug('diciphr.nifti_utils.check_affines_and_shapes_match')
     affines = [im.affine for im in images]
     shapes = [im.shape for im in images]
-    _affine_check = np.sum(np.array([np.abs(_a - affines[0]) for _a in affines]))
-    if _affine_check > 1e-4:
+    ret = True
+    affine_check = all(np.allclose(affines[0], aff, rtol=1e-05, atol=1e-08) for aff in affines[1:])
+    if not affine_check:
         logging.debug('Affines: {}'.format(affines))
-        raise DiciphrException('Affines do not match!')
-    _shape_check = np.sum(np.array(shapes) != np.array(shapes[0])[None, ...])
-    if _shape_check > 0:
+        if raise_exception:
+            raise ValueError('Affines do not match!')
+        ret = False 
+    shape_check = all(shapes[0] == shp for shp in shapes[1:])
+    if not shape_check:
         logging.debug('Shapes: {}'.format(shapes))
-        raise DiciphrException('Shapes do not match!')
+        if raise_exception:
+            raise ValueError('Shapes do not match!')
+        ret = False 
+    return ret 
+
+def mask_image(img, mask_img, threshold_value=0):
+    mask_data = mask_img.get_fdata() > threshold_value 
+    data = img.get_fdata() * mask_data
+    return nifti_image(data, img.affine, img.header)
     
 def multiply_images(*images):
     logging.debug('diciphr.nifti_utils.multiply_images')
-    check_affines_and_shapes_match(*images)
+    check_affines_and_shapes_match(*images, raise_exception=True)
     aff = images[0].affine
-    result_data = images[0].get_data()
+    result_data = images[0].get_fdata()
     if len(images) > 1:
         for im in images[1:]:
-            result_data = result_data * im.get_data()
+            result_data = result_data * im.get_fdata()
     result_im = nifti_image(result_data, aff)
     return result_im
     
 def add_images(*images, **kwargs):
     logging.debug('diciphr.nifti_utils.add_images')
-    check_affines_and_shapes_match(*images)
+    check_affines_and_shapes_match(*images, raise_exception=True)
     binarize = kwargs.get('binarize', False)
     aff = images[0].affine
     if binarize:
-        result_data = (images[0].get_data() > 0).astype(np.int16)
+        result_data = (images[0].get_fdata() > 0).astype(np.int16)
     else:
-        result_data = images[0].get_data()
+        result_data = images[0].get_fdata()
     if len(images) > 1:
         for im in images[1:]:
             if binarize:
-                result_data = ((result_data + im.get_data()) > 0).astype(np.int16)
+                result_data = ((result_data + im.get_fdata()) > 0).astype(np.int16)
             else:
-                result_data = result_data + im.get_data()
+                result_data = result_data + im.get_fdata()
     result_im = nifti_image(result_data, aff)
     return result_im
-    
-def threshold_image(nifti_img, threshold_value):
-    data = nifti_img.get_data()
-    data_t = (data > threshold_value)*1 
-    img = nifti_image(data, nifti_img.affine)
-    return img 
     
 def replace_labels(atlas_im, input_list, output_list):
     '''
@@ -1042,7 +1152,7 @@ def replace_labels(atlas_im, input_list, output_list):
     -------
     None
     '''
-    atlas_data = atlas_im.get_data()
+    atlas_data = atlas_im.get_fdata()
     atlas_affine = atlas_im.affine
     atlas_header = nib.Nifti1Header()
     atlas_header.set_sform(atlas_affine)
@@ -1052,20 +1162,21 @@ def replace_labels(atlas_im, input_list, output_list):
     new_atlas_data = np.zeros(atlas_data.shape, dtype=np.float32)
     for _i, _o in zip(input_list, output_list):
         new_atlas_data[atlas_data == _i] = _o
-    new_atlas_im = nib.Nifti1Image(new_atlas_data, atlas_affine, atlas_header)
+    new_atlas_im = nifti_image(new_atlas_data, atlas_affine, atlas_header)
     return new_atlas_im
 
 def zeros_nifti(nifti_im):
     return nifti_image(np.zeros(nifti_im.shape, dtype=np.uint8), nifti_im.affine)
     
 def ones_nifti(nifti_im):
-    return nifti_image((nifti_im.get_data()>0).astype(np.uint8), nifti_im.affine)
+    return nifti_image((nifti_im.get_fdata()>0).astype(np.uint8), nifti_im.affine)
     
 def invert_mask(nifti_im):
-    return nifti_image((nifti_im.get_data()==0).astype(np.uint8), nifti_im.affine)
+    return nifti_image((nifti_im.get_fdata()==0).astype(np.uint8), nifti_im.affine)
        
 def concatenate_niftis(*nifti_ims):
     affine = nifti_ims[0].affine
+    hdr = nifti_ims[0].header
     data = []
     for img in nifti_ims:
         d = img.get_fdata()
@@ -1073,126 +1184,38 @@ def concatenate_niftis(*nifti_ims):
             d = d[...,np.newaxis]
         data.append(d)
     dataC = np.concatenate(data, axis=-1)
-    return nifti_image(dataC, affine)
-
-def ants_registration_syn(moving_images, fixed_images, output_prefix, mask_images=[], initial_transform_filenames=[], 
-                        transform_type='s', dimensionality=3, radius=4, spline_distance=26, 
-                        precision='f', histogram_matching=False, collapse_transforms=1):
-    fixed_images = force_to_list(fixed_images)
-    moving_images = force_to_list(moving_images)
-    initial_transform_filenames = force_to_list(initial_transform_filenames)
-    mask_images = force_to_list(mask_images)
+    return nifti_image(dataC, affine, hdr)
     
-    tmpdir = make_temp_dir(prefix='ants_registration')
-    try:
-        fixed_filenames = [ os.path.join(tmpdir, 'fixed{}.nii.gz'.format(i)) for i in range(len(fixed_images)) ]
-        moving_filenames = [ os.path.join(tmpdir, 'moving{}.nii.gz'.format(i)) for i in range(len(moving_images)) ]
-        mask_filenames = [ os.path.join(tmpdir, 'mask{}.nii.gz'.format(i)) for i in range(len(mask_images)) ]
-        for im, fn in zip(fixed_images, fixed_filenames):
-            write_nifti(fn, im)
-        for im, fn in zip(moving_images, moving_filenames):
-            write_nifti(fn, im)
-        for im, fn in zip(mask_images, mask_filenames):
-            write_nifti(fn, im)
-        cmd = ['antsRegistrationSyN.sh', 
-                '-d', str(dimensionality), 
-                '-f', ' '.join(fixed_filenames), 
-                '-m', ' '.join(moving_filenames), 
-                '-o', output_prefix,
-                '-t', transform_type,
-                '-r', str(radius), 
-                '-s', str(spline_distance), 
-                '-p', precision, 
-                '-j', '1' if histogram_matching else '0' , 
-                '-z', str(collapse_transforms)
-        ]
-        if mask_images:
-            cmd.extend(['-x', ' '.join(mask_filenames)])
-        if initial_transform_filenames:
-            cmd.extend(['-x', ' '.join(initial_transform_filenames)])
-        ExecCommand(cmd).run()        
-    except Exception as err:
-        raise err
-    finally:
-        shutil.rmtree(tmpdir)                    
-    
-def ants_apply_transforms(input_filename, output_filename, reference_filename, transform_filenames, invert=[], interpolation='Linear', bg_value=0):
+def n4_bias_correct(nifti_img, field=False, mask_img=None, weight_img=None,
+                convergence=None, bspline=None):
+    ''' 
+    Run ANTs N4BiasFieldCorrection on a nifti image.
     '''
-    Runs antsApplyTransforms 
-
-    Parameters
-    ----------
-    input_filename : str
-        input nifti image file
-    output_filename : str
-        output  nifti image file
-    reference_filename : str
-        reference nifti image file
-    transform_filenames : list
-        transform files, as a list 
-    invert : Optional[list]
-        A list of 1s and 0s, that corresponds to transform_filenames: 1 for invert the transform at that position in the list, 0 for not invert. 
-    interpolation : Optional[str]
-        The interpolation argument, one of 'Linear', 
-                        'NearestNeighbor', 
-                        'MultiLabel[<sigma=imageSpacing>,<alpha=4.0>]', 
-                        'Gaussian[<sigma=imageSpacing>,<alpha=1.0>]'.
-                        'BSpline[<order=3>]',
-                        'CosineWindowedSinc',
-                        'WelchWindowedSinc',
-                        'HammingWindowedSinc',
-                        'LanczosWindowedSinc',
-                        'GenericLabel[<interpolator=Linear>]'
-    bg_value : Optional[float]
-        The background fill value of the data, usually 0, but sometimes 1 for e.g. FW VF map. 
-    Returns
-    -------
-    None
-    '''
-    if len(invert) == 0:
-        invert = [ 0 for tf in transform_filenames ] 
-    transform_string = ','.join( [tf if i==0 else '[{},1]'.format(tf) for tf, i in zip(transform_filenames, invert) ])
-    cmd = [ 'antsApplyTransforms', 
-                '-i', input_filename, 
-                '-o', output_filename, 
-                '-r', reference_filename, 
-                '-t', transform_string,
-                '-n', interpolation, 
-                '-f', str(bg_value),
-                '-v', '1' 
-    ]
-    ExecCommand(cmd).run() 
-                
-def read_ants_affine_transform(transform_file):
-    '''
-    Call command antsTransformInfo to read an itk transform file.
-    '''
-    import subprocess
-    antsTransformInfo_cmd = which('antsTransformInfo')
-    transformInfoOutput = subprocess.check_output([antsTransformInfo_cmd, transform_file], shell=False).decode('ascii')
-
-    matrix = transformInfoOutput.split('Matrix:')[1].split('Offset:')[0]
-    matrix = matrix.strip().split('\n')
-    matrix = [ a.strip().split() for a in matrix]
-    matrix = np.array(matrix).astype(float)
-
-    offset = transformInfoOutput.split('Offset:')[1].split('Center:')[0]
-    offset = offset.split('[')[1].split(']')[0].split(',')
-    offset = np.array(offset).astype(float)
-
-    center = transformInfoOutput.split('Center:')[1].split('Translation:')[0]
-    center = center.split('[')[1].split(']')[0].split(',')
-    center = np.array(center).astype(float)
-
-    translation = transformInfoOutput.split('Translation:')[1].split('Inverse:')[0]
-    translation = translation.split('[')[1].split(']')[0].split(',')
-    translation = np.array(translation).astype(float)
-
-    inverse = np.linalg.inv(matrix)
-    
-    ret = dict((('Matrix',matrix), 
-            ('Offset',offset), 
-            ('Center',center), 
-            ('Translation',translation), 
-            ('Inverse',inverse)))
-    return ret
+    if convergence is None:
+        convergence='[50x50x50x50,0.0]'
+    if bspline is None:
+        bspline='[1x1x1,3]'
+    with TempDirManager(prefix='n4bias') as manager:
+        tmpdir = manager.path()
+        input_filename = os.path.join(tmpdir, 'image.nii')
+        output_filename = os.path.join(tmpdir, 'output.nii')
+        field_filename = os.path.join(tmpdir, 'field.nii')
+        nifti_img.to_filename(os.path.join(tmpdir, 'image.nii'))
+        cmd = [ 'N4BiasFieldCorrection', '-d', '3', '-i', input_filename, '-v', '1',
+                '-o', f'[{output_filename},{input_filename}]',
+                '-b', str(bspline), '-c', str(convergence)]
+        if mask_img is not None:
+            mask_filename = os.path.join(tmpdir, 'mask.nii')
+            mask_img.to_filename(mask_filename)
+            cmd += ['-x', mask_filename]
+        if weight_img is not None:
+            weight_filename = os.path.join(tmpdir, 'weight.nii')
+            weight_img.to_filename(weight_filename)
+            cmd += ['-w', weight_filename]
+        ExecCommand(cmd).run()
+        output_im = read_nifti(output_filename, lazy_load=False)
+        field_im = read_nifti(field_filename, lazy_load=False)
+        if field:
+            return output_im, field_im 
+        else:
+            return output_im 

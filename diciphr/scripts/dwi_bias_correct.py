@@ -1,8 +1,8 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
-from diciphr.utils import ( check_inputs, make_dir, 
-                protocol_logging, DiciphrException )
+import os, sys, logging
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
+                        DiciphrArgumentParser, DiciphrException )
 from diciphr.nifti_utils import read_nifti, read_dwi, write_dwi 
 from diciphr.diffusion import ( n4_bias_correct_dwi, 
                 round_bvals, extract_b0, bet2_mask_nifti )
@@ -15,7 +15,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='DWI_Bias_Correct'    
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-d',action='store',metavar='dwi',dest='dwi_file',
                     type=str, required=True, 
                     help='The DWI filename in Nifti format.'
@@ -44,15 +44,6 @@ def buildArgsParser():
                     type=float, required=False, default=0.001,
                     help='Bias threshold. Default 0.001.'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
-                    
     return p
     
 def main(argv):
@@ -60,7 +51,7 @@ def main(argv):
     args = parser.parse_args(argv)
     output_dir = os.path.dirname(os.path.realpath(args.output))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         check_inputs(args.dwi_file, nifti=True)
         check_inputs(output_dir, directory=True)
@@ -73,9 +64,9 @@ def main(argv):
         run_dwi_bias_correct(args.dwi_file, args.output, mask_file=args.mask_file, 
                 bval_file=args.bval_file, bvec_file=args.bvec_file, 
                 bias_iterations=args.bias_iterations, bias_threshold=args.bias_threshold)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def run_dwi_bias_correct(dwi_file, output, mask_file=None, bval_file=None, bvec_file=None, 
                 bias_iterations=[50,50,50,50], bias_threshold=0.001):

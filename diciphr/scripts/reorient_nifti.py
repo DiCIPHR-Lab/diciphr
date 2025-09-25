@@ -1,9 +1,8 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
-from ..utils import check_inputs, make_dir, protocol_logging, DiciphrException
-from ..nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi,
-                reorient_dwi, reorient_nifti )
+import os, sys, logging
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser, DiciphrException
+from diciphr.nifti_utils import read_nifti, write_nifti, read_dwi, write_dwi, reorient_dwi, reorient_nifti
 import nibabel as nib
 
 DESCRIPTION = '''
@@ -13,7 +12,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='Reorient_Nifti'    
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-i', '-d', action='store',metavar='datafile',dest='datafile',
                     type=str, required=True, 
                     help='Input filename'
@@ -26,14 +25,6 @@ def buildArgsParser():
                     type=str, required=False, default='LPS', 
                     help='Orientation string. Default LPS'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
@@ -41,14 +32,14 @@ def main(argv):
     args = parser.parse_args(argv)
     output_dir = os.path.dirname(os.path.realpath(args.outputfile))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         check_inputs(args.datafile, nifti=True)
         check_inputs(output_dir, directory=True)
         run_reorient_nifti(args.datafile, args.outputfile, orn_string=args.orn_string)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def run_reorient_nifti(datafile, outputfile, orn_string='LPS'):
     ''' 

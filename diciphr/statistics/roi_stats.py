@@ -1,26 +1,22 @@
 # -*- coding: utf-8 -*-
 
-import os, shutil, logging
+import logging
 import numpy as np
 import nibabel as nib
 import pandas as pd
-from ..utils import ( make_dir, make_temp_dir, is_string, 
-                ExecCommand, DiciphrException, which )
-from ..nifti_utils import read_nifti, write_nifti, strip_nifti_ext
-from ..diffusion import TensorScalarCalculator, is_tensor
-from collections import OrderedDict
-from itertools import product
+from diciphr.utils import is_string
+from diciphr.nifti_utils import read_nifti 
 
 def scalar_roi_stats(scalar_im, atlas_im, measures=['mean','median','std','volume'], nonzero=True, 
                     labels=None, index=None, roi_names=None, outlier_thresh=6, mask_im=None):
     logging.debug('diciphr.statistics.dti_roi_stats')
     scalar_data = scalar_im.get_fdata()
-    atlas_data = atlas_im.get_fdata().astype(int)
+    atlas_data = atlas_im.get_fdata().astype(np.int32)
     if labels is None:
         labels = range(1,atlas_data.max()+1)
     num_labels = len(labels)
     if mask_im is not None:
-        mask = mask_im.get_data() > 0 
+        mask = mask_im.get_fdata() > 0 
     else:
         mask = atlas_data > 0
     if nonzero:
@@ -80,10 +76,10 @@ def sample_dti_roistats(datafiles, atlasfiles, measures=['mean','median','std','
                     index=None, labels=None, roi_names=None, nonzero=True, outlier_thresh=10, mask_im=None):
     if is_string(atlasfiles):
         # was provided a path not a list of paths 
-        atlases = len(datafiles)*[nib.load(atlasfiles)] 
+        atlases = len(datafiles)*[read_nifti(atlasfiles)] 
     else:
-        atlases = [ nib.load(f) for f in atlasfiles ]
-    images = [ nib.load(f) for f in datafiles ]
+        atlases = [ read_nifti(f) for f in atlasfiles ]
+    images = [ read_nifti(f) for f in datafiles ]
     kwargs = {'measures':measures, 'labels':labels, 'roi_names':roi_names, 'nonzero':nonzero, 'outlier_thresh':outlier_thresh, 'mask_im':mask_im}
     if index is None:
         index = [None]*len(images)

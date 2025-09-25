@@ -1,8 +1,8 @@
 #! /usr/bin/env python
 
-import os, sys, logging, traceback, argparse, time
-from ..utils import protocol_logging, DiciphrException
-from ..tractography.track_utils import track_density_image 
+import os, sys, logging 
+from diciphr.utils import protocol_logging, DiciphrArgumentParser, DiciphrException
+from diciphr.tractography.track_utils import track_density_image 
 import nibabel
 import numpy as np
 
@@ -13,7 +13,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='convert_tracks'
 
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-i', action='store', metavar='input', dest='input_files',
                     type=str, required=True, nargs="*",
                     help='The input file(s)'
@@ -25,21 +25,17 @@ def buildArgsParser():
     p.add_argument('-a', action='store', metavar='ref', dest='ref_nifti',
                     type=str, required=False, default=None,
                     )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile',
-                    type=str, required=False, default=None,
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
 
 def main(argv):
     parser = buildArgsParser()
     args = parser.parse_args(argv)
-    protocol_logging(PROTOCOL_NAME, args.logfile)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         convert_tracks(args.input_files, args.output_files, ref_nifti=args.ref_nifti)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
 
 def convert_tracks(input_files, output_files, ref_nifti=None):
     if not len(input_files) == len(output_files):

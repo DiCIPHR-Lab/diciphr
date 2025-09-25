@@ -1,5 +1,5 @@
-from .connmat_utils import density, degree, nodestrength, normalize_mat, binarize_mat, is_binary
-from ..utils import DiciphrException
+from connmat_utils import density, degree, nodestrength, normalize_mat, binarize_mat, is_binary
+from diciphr.utils import DiciphrException
 import numpy as np
 import bct 
 
@@ -107,7 +107,7 @@ def betweenness_wei(connmat):
             V = np.where(D == np.min(D[S]))[0]
 
         DP = np.zeros((n,))
-        Q = Q.astype(int)
+        Q = Q.astype(np.int32)
         for w in Q[:n - 1]:
             BC[w] += DP[w]
             for v in np.where(P[w, :])[0]:

@@ -1,20 +1,26 @@
-import os, sys, shutil, logging
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jan 18 14:04:32 2016
+
+@author: parkerwi
+"""
+
+import os, sys, logging
 import numpy as np
 import nibabel as nib
-from .utils import ( make_temp_dir, DiciphrException, ExecCommand )
-from .nifti_utils import ( nifti_image, find_nifti_from_basename, 
+from diciphr.utils import ( DiciphrException, ExecCommand, TempDirManager, is_nifti_file )
+from diciphr.nifti_utils import ( nifti_image, read_nifti, find_nifti_from_basename, 
                                  extract_roi, reorient_nifti, dilate_image, erode_image )
-from .resources import labels_86, labels_87, labels_wm
 
 def _check_bedpostx_mask_alignment(bedpostx_subj_dir, log_file=None):
     '''Try to find slices in bedpostX output that do not align with the input mask.'''
     logging.debug('diciphr.connectivity._check_bedpostx_mask_alignment')
     merged_filename = os.path.join(bedpostx_subj_dir, 'bedpost.bedpostX', 'merged_f1samples')
     merged_filename = find_nifti_from_basename(os.path.realpath(merged_filename))
-    merged_data = nib.load(merged_filename).get_data()
+    merged_data = read_nifti(merged_filename).get_fdata()
     mask_filename = os.path.join(bedpostx_subj_dir, 'bedpost', 'nodif_brain_mask')
     mask_filename = find_nifti_from_basename(os.path.realpath(mask_filename))
-    mask_data = nib.load(mask_filename).get_data()
+    mask_data = read_nifti(mask_filename).get_fdata()
     nz = mask_data.shape[2]
     ret=''
     for z_idx in range(nz):
@@ -48,9 +54,7 @@ def _check_bedpostx_niftis(bedpostx_subj_dir, log_file=None):
         if not os.path.exists(os.path.join(directory, f)):   
             message = 'File missing: {}\n'.format(f)
         else:
-            try:
-                nib.load(os.path.join(directory, f))
-            except:
+            if not is_nifti_file(os.path.join(directory, f)):
                 message = 'Nifti error: {}\n'.format(f)
         if message:
             if log_file:
@@ -72,7 +76,7 @@ def check_bedpostx_output(bedpostx_subj_dir, log_file=None):
 def check_target_labels(target_mask_im,atlas_labels):
     '''If target_mask_im does not contain only the roi labels in list atlas_labels, raise a DiciphrException.'''
     logging.debug('diciphr.connectivity.check_target_labels')
-    target_mask_uniq = np.unique(target_mask_im.get_data())
+    target_mask_uniq = np.unique(target_mask_im.get_fdata())
     labels_uniq = np.unique([0]+atlas_labels)
     if not (target_mask_uniq == labels_uniq).all():
         raise DiciphrException('Target image labels do not match provided labels')
@@ -94,22 +98,17 @@ def convert_freesurfer_output_to_nifti_reference_t1(freesurfer_filename, referen
     logging.debug('diciphr.connectivity.convert_freesurfer_output_to_nifti')
     if not os.path.exists(freesurfer_filename):
         raise DiciphrException('File does not exist {}'.format(freesurfer_filename))
-    tmpdir = make_temp_dir(prefix='freesurfer2nifti')
-    try:
+    with TempDirManager(prefix='fs2nifti') as manager:
+        tmpdir = manager.path()
         fs_nifti = os.path.join(tmpdir,'freesurfer_as_nifti.nii.gz')
         cmd=['mri_convert',freesurfer_filename,fs_nifti]
-        returncode, stdout, stderr = ExecCommand(cmd).run()
-        logging.debug(stdout)
-        if returncode != 0:
-            logging.error(stderr)
-            raise DiciphrException('Error encountered in mri_convert')
-        fs_im = nib.load(fs_nifti)
+        ExecCommand(cmd).run()
+        fs_im = read_nifti(fs_nifti)
         ref_affine = reference_im.affine
-        ref_affine_inv = np.linalg.inv(ref_affine)
-        ref_data = reference_im.get_data()
+        ref_data = reference_im.get_fdata()
         orientation = ''.join((_.upper() for _ in nib.orientations.aff2axcodes(ref_affine)))
         reoriented_im = reorient_nifti(fs_im, orientation)
-        reoriented_data = reoriented_im.get_data()
+        reoriented_data = reoriented_im.get_fdata()
         reoriented_affine = reoriented_im.affine
         reoriented_affine_inv = np.linalg.inv(reoriented_affine)
         new_data = np.zeros(ref_data.shape, dtype=reoriented_im.header.get_data_dtype())
@@ -125,10 +124,6 @@ def convert_freesurfer_output_to_nifti_reference_t1(freesurfer_filename, referen
         if np.max(_already_visited_this_voxel_data) > 1:
             logging.warning("Voxels were assigned values more than once: {}".format(np.where(_already_visited_this_voxel_data)))
         im_out = nib.Nifti1Image(new_data, ref_affine)
-    except Exception as e:
-        raise e
-    finally:
-        shutil.rmtree(tmpdir)
     return im_out
     
 def convert_freesurfer_to_nifti(freesurfer_filename, orn_string='LPS'):
@@ -148,25 +143,35 @@ def convert_freesurfer_to_nifti(freesurfer_filename, orn_string='LPS'):
     logging.debug('diciphr.connectivity.convert_freesurfer_to_nifti')
     if not os.path.exists(freesurfer_filename):
         raise DiciphrException('File does not exist {}'.format(freesurfer_filename))
-    tmpdir = make_temp_dir(prefix='freesurfer2nifti')
-    try:
+    with TempDirManager(prefix='fs2nifti') as manager:
+        tmpdir = manager.path()
         fs_nifti = os.path.join(tmpdir,'nifti_lia.nii.gz')
         cmd=['mri_convert',freesurfer_filename,fs_nifti]
-        returncode, stdout, stderr = ExecCommand(cmd).run()
-        logging.debug(stdout)
-        if returncode != 0:
-            logging.error(stderr)
-            raise DiciphrException('Error encountered in mri_convert')
-        lia_im = nib.load(fs_nifti)
+        ExecCommand(cmd).run()
+        lia_im = read_nifti(fs_nifti)
         nifti_im = reorient_nifti(lia_im, orientation=orn_string)
-    finally:
-        shutil.rmtree(tmpdir)
     return nifti_im 
-    
+
+labels_86 = [
+    1001, 1002, 1003, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 
+    1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 8, 10, 11, 12, 13, 17, 18, 26, 28, 
+    2001, 2002, 2003, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021,
+    2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033, 2034, 2035, 47, 49, 50, 51, 52, 53, 54, 58, 60
+]
+
+labels_wm = [2,7,41,46,250,251,252,253,254,255]
+
+labels_87 = [
+    1001, 1002, 1003, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 
+    1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 8, 10, 11, 12, 13, 16, 17, 18, 26, 28, 
+    2001, 2002, 2003, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 
+    2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033, 2034, 2035, 47, 49, 50, 51, 52, 53, 54, 58, 60
+]
+
 def extract_gm_mask(aparc_aseg_nifti_im, include_brain_stem=False):
     '''Create the GM mask nifti image from Freesurfer output.'''
     logging.debug('diciphr.connectivity.extract_gm_mask')
-    free_data = aparc_aseg_nifti_im.get_data()
+    free_data = aparc_aseg_nifti_im.get_fdata()
     gm_data = np.zeros(free_data.shape, dtype=np.int16)
     if include_brain_stem:
         labels = labels_87
@@ -174,19 +179,19 @@ def extract_gm_mask(aparc_aseg_nifti_im, include_brain_stem=False):
         labels = labels_86
     for label in labels:
         gm_data[free_data == label] = 1
-    gm_im = nib.Nifti1Image(gm_data, aparc_aseg_nifti_im.affine)
-    gm_labels_im = nib.Nifti1Image(gm_data*free_data, aparc_aseg_nifti_im.affine)
+    gm_im = nifti_image(gm_data, aparc_aseg_nifti_im.affine)
+    gm_labels_im = nifti_image(gm_data*free_data, aparc_aseg_nifti_im.affine)
     check_target_labels(gm_labels_im, labels)
     return gm_im    
     
 def extract_wm_mask(aparc_aseg_nifti_im):
     '''Create the WM mask nifti image from Freesurfer output.'''
     logging.debug('diciphr.connectivity.extract_wm_mask')
-    free_data = aparc_aseg_nifti_im.get_data()
+    free_data = aparc_aseg_nifti_im.get_fdata()
     wm_data = np.zeros(free_data.shape, dtype=np.int16)
     for label in labels_wm:
         wm_data[free_data == label] = 1
-    wm_im = nib.Nifti1Image(wm_data, aparc_aseg_nifti_im.affine)
+    wm_im = nifti_image(wm_data, aparc_aseg_nifti_im.affine)
     return wm_im
     
 def wm_gm_boundary(wm_im, gm_im):
@@ -194,15 +199,15 @@ def wm_gm_boundary(wm_im, gm_im):
     and intersect with the GM mask.'''
     logging.debug('diciphr.connectivity.wm_gm_boundary')
     wm_dil_im = dilate_image(wm_im, kernel='gauss', kernel_size=1.5, iterations=1, binarize=False)
-    wm_dil_data = wm_dil_im.get_data()
-    gm_data = gm_im.get_data()
+    wm_dil_data = wm_dil_im.get_fdata()
+    gm_data = gm_im.get_fdata()
     wm_gm_boundary_data = (wm_dil_data * gm_data).astype(np.int16)
     wm_gm_boundary_im = nib.Nifti1Image(wm_gm_boundary_data, gm_im.affine)
     return wm_gm_boundary_im
     
 def wm_gm_boundary_add_subctx(wm_gm_boundary_im, gm_labels_im):
     logging.debug('diciphr.connectivity.wm_gm_boundary_add_subctx')
-    gm_labels_data = gm_labels_im.get_data()
+    gm_labels_data = gm_labels_im.get_fdata()
     subctx_labels = list(np.unique(gm_labels_data[gm_labels_data > 0]))
     subctx_labels = list(filter(lambda _x: _x < 100, subctx_labels))
     subctx_labels = list(filter(lambda _x: _x != 47, subctx_labels))
@@ -212,17 +217,17 @@ def wm_gm_boundary_add_subctx(wm_gm_boundary_im, gm_labels_im):
         logging.debug('Eroding subcortical mask label {}'.format(label))
         subctx_label_im = extract_roi(gm_labels_im, label)
         subctx_label_ero_im = erode_image(subctx_label_im, kernel='gauss', kernel_size=1.5, iterations=1, binarize=True)
-        subctx_boundary_data += subctx_label_im.get_data() - subctx_label_ero_im.get_data()
-    wm_gm_boundary_data = wm_gm_boundary_im.get_data()
+        subctx_boundary_data += subctx_label_im.get_fdata() - subctx_label_ero_im.get_fdata()
+    wm_gm_boundary_data = wm_gm_boundary_im.get_fdata()
     wm_gm_boundary_data = subctx_boundary_data + wm_gm_boundary_data
     wm_gm_boundary_data = (wm_gm_boundary_data > 0).astype(wm_gm_boundary_data.dtype)
-    wm_gm_boundary_out_im = nib.Nifti1Image(wm_gm_boundary_data, wm_gm_boundary_im.affine, wm_gm_boundary_im.header)
+    wm_gm_boundary_out_im = nifti_image(wm_gm_boundary_data, wm_gm_boundary_im.affine, wm_gm_boundary_im.header)
     return wm_gm_boundary_out_im
 
 def write_target_masks(target_mask_im,targets_dir):
     '''Write a nifti file in targets_dir for each ROI in the atlas nifti image.'''
     logging.debug('diciphr.connectivity.write_target_masks')
-    target_mask_data = target_mask_im.get_data().astype(np.int16)
+    target_mask_data = target_mask_im.get_fdata().astype(np.int16)
     targets_dir=os.path.realpath(targets_dir)
     with open(os.path.join(targets_dir,'masks.txt'),'w') as targets_text:
         labels = np.unique(target_mask_data[target_mask_data>0])
@@ -237,7 +242,7 @@ def write_target_masks(target_mask_im,targets_dir):
 def split_seed_mask(seed_mask_im,seeds_dir,num_masks):
     logging.debug('diciphr.connectivity.split_seed_mask')
     '''Split a probtrackx seed_mask_im into num_masks smaller pieces to run in parallel.'''
-    seed_mask_data = (seed_mask_im.get_data() > 0 ).astype(int)
+    seed_mask_data = (seed_mask_im.get_fdata() > 0 ).astype(np.int32)
     num_seed_voxels = np.sum(seed_mask_data)
     nb_voxels_per_seed = int( num_seed_voxels/num_masks )
     seed_mask_shape = seed_mask_data.shape

@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 
-import sys, traceback, logging, re 
+import sys, logging, re 
 import pandas as pd
 import numpy as np
 from collections import OrderedDict
@@ -8,40 +8,13 @@ import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from patsy import dmatrix
 from scipy.stats import mannwhitneyu, anderson, pearsonr, spearmanr
-from ..nifti_utils import nifti_image, intersection_mask
-from .stats_utils import fdr, filter_cohort
-from ..utils import DiciphrException, check_inputs, make_temp_dir, logical_or, logical_and
-from ..connectivity.connmat_utils import ut_to_square
+from diciphr.nifti_utils import nifti_image, intersection_mask
+from diciphr.statistics.stats_utils import fdr, filter_cohort
+from diciphr.utils import DiciphrException, TempDirManager, check_inputs, logical_or, logical_and
+from diciphr.connectivity.connmat_utils import ut_to_square
     
-def afni_regression(nifti_filename_template, cohort, full_model, columns=None, 
-                        reduced_model=None, mask=None, filters=[], 
-                        centralize=[], log_scale=False):
-    # Refine cohortfile
-    for expr in filters:
-        cohort, data = filter_cohort(cohort, expr, data=data)
-    for key in centralize:
-        cohort[key] -= np.mean(cohort[key])
-    subjects = list(cohort.index)
-    nifti_files = [ nifti_filename_template.format(s=s) for s in subjects ]
-    check_inputs(*nifti_files, nifti=True)
-    if not mask:    
-        mask = intersection_mask(nifti_files)
-    N = len(nifti_files)
-    # Refine formulas
-    formula_full = '~ {}'.format(full_model.replace(':','*'))
-    endogs_full = full_model.replace('(','').replace(')','').replace(':','+').replace('*','+').split('+')
-    if columns is None:
-        columns = endogs_full
-    cohort = cohort[endogs_full]
-    design_full = dmatrix(formula_full, cohort, return_type="dataframe")
-    if reduced_model: 
-        formula_reduced = '~ {}'.format(reduced_model)
-        design_reduced = dmatrix(formula_reduced, cohort, return_type="dataframe")
-    tmpdir = make_temp_dir(prefix="afni_regression")
-    full_cmd = ["3dRegAna"]
-
 def assign_to_results(results, key, value, i, M, default=0.0):
-    ''' Convenience function to assign a value to an index of a dictionary of arrays if it has the key, or create the array at the key if it does not. ''' 
+    ''' Assign a value to an index of a dictionary of arrays if it has the key, or create the array at the key if it does not. ''' 
     if np.isnan(value):
         value = default 
     if key in results.keys():
@@ -206,9 +179,8 @@ def elementwise_ols(data, cohort, full_model, reduced_model=None, columns=None, 
                 assign_to_results(results,'q_fullvsreduced',1.0,i,M,1.0)    
             predicted = result_full.predict(resid_exogs)
             residualized_data[:,i] = data[:,i] - predicted 
-        except:
-            logging.warning(" - Could not fit model at element {}".format(i))
-            logging.warning("".join(traceback.format_exception(*sys.exc_info())))
+        except Exception:
+            logging.warning(f"Could not fit model at element {i}", exc_info=True )
     # FDR Correction
     pval_keys = list(filter(lambda x: x.startswith('p_'), results.keys() ))
     logging.debug('FDR Correction')
@@ -428,7 +400,7 @@ def results_to_adjacency(results, diagonal=False):
 
 def results_to_niftis(results, mask_im):
     ret = OrderedDict()
-    mask_data = mask_im.get_data() > 0
+    mask_data = mask_im.get_fdata() > 0
     for k in results:
         if k in ['df_resid', 'df_model', 'n']:
             continue 

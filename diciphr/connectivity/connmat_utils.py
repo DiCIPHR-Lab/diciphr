@@ -75,7 +75,7 @@ def binarize_mat(connmat):
     
 def normalize_mat(connmat):
     '''Min-max normalize a matrix''' 
-    return (connmat.astype(float) - np.min(connmat))/(np.max(connmat) - np.min(connmat))
+    return (connmat.astype(np.float32) - np.min(connmat))/(np.max(connmat) - np.min(connmat))
 
 def fischer_z_transform(connmat):
     ''' Fischer Z transform, e.g. for a functional connectome '''

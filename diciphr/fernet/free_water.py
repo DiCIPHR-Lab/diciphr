@@ -14,7 +14,7 @@ def tensor_from_iwasawa(w, out=None):
     """Returns the tensor coefficients from its Iwasawa coordinates.
     """
     if out == None:
-        out = np.zeros(w.shape, dtype=np.float32)
+        out = np.zeros(w.shape, dtype=float)
     out[..., 0] = w[..., 0]
     out[..., 1] = w[..., 0]*w[..., 3] 
     out[..., 2] = w[..., 1] + w[..., 0]*w[..., 3]*w[..., 3]
@@ -31,7 +31,7 @@ def iwasawa_from_tensor(d, out=None):
     coefficients.
     """
     if out == None:
-        out = np.zeros(d.shape, dtype=np.float32)
+        out = np.zeros(d.shape, dtype=float)
     out[..., 0] = d[..., 0]  # w_1 = D_xx
     out[..., 1] = np.where(d[..., 0] == 0, d[..., 2], 
                            d[..., 2] - d[..., 1] * d[..., 1] / d[..., 0])
@@ -59,7 +59,7 @@ def clip_tensor_evals(evals, evecs, l_min, l_max, out=None):
     tensor_shape = list(evals.shape[:-1])
     tensor_shape.append(6)
     if out==None:
-        out = np.zeros(tensor_shape, dtype=np.float32)
+        out = np.zeros(tensor_shape, dtype=float)
     out[..., 0] = (evecs[..., 0, :] * evals[..., :] * evecs[..., 0, :]).sum(-1)
     out[..., 1] = (evecs[..., 1, :] * evals[..., :] * evecs[..., 0, :]).sum(-1)
     out[..., 2] = (evecs[..., 1, :] * evals[..., :] * evecs[..., 1, :]).sum(-1)
@@ -196,7 +196,7 @@ def grad_spatial_reg(tensor_iwasawa, mask=None):
     """
     dim_x, dim_y, dim_z, _ = tensor_iwasawa.shape
     if mask == None:
-        mask = np.ones((dim_x, dim_y, dim_z), dtype=np.bool)
+        mask = np.ones((dim_x, dim_y, dim_z), dtype=bool)
     grad = np.zeros((dim_x, dim_y, dim_z, 6))
     first_term = np.zeros((dim_x, dim_y, dim_z, 3, 6))
     spatial_grad_tensor = spatial_gradient(tensor_iwasawa)

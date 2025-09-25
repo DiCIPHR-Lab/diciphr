@@ -1,8 +1,9 @@
 #! /usr/bin/env python
 
-import os, sys, shutil, logging, argparse, traceback
-from ..statistics.zscores import corrected_zscores
-from ..statistics.utils import filter_cohort
+import os, sys, logging
+from diciphr.statistics.zscores import corrected_zscores
+from diciphr.statistics.utils import filter_cohort
+from diciphr.utils import DiciphrArgumentParser
 import numpy as np
 import pandas as pd 
 
@@ -13,7 +14,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='zscores'
 
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     
     p.add_argument('-i', '--input', action='store', metavar='<csv>', dest='inputcsv',
                     type=str, required=True, 
@@ -39,19 +40,19 @@ def buildArgsParser():
                     type=str, required=False, default=[], nargs="*", 
                     help='Filter(s) to apply which define the subset of cohort over which mean and SD for z-scores are calculated, e.g. Group=Control'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False,
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile',
-                    type=str, required=False, default=None,
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
 
 def main(argv):
     parser = buildArgsParser()
     args = parser.parse_args(argv)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
+    try:
+        run_zscores(args)
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
+        
+def run_zscores(args):
     dataframe = pd.read_csv(args.inputcsv, index_col=0, na_values=[' ','na','nan','NaN','NAN','NA','#N/A','.','NULL'])
     covars = None
     if args.covarscsv is not None:

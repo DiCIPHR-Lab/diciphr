@@ -1,10 +1,10 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
-from ..utils import ( check_inputs, make_dir, protocol_logging,
-                    DiciphrException )
-from ..nifti_utils import read_nifti, read_dwi, multiply_images, has_nifti_ext
-from ..diffusion import round_bvals, extract_b0, bet2_mask_nifti, extract_shells_from_multishell_dwi
+import os, sys, logging
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging,
+                    DiciphrArgumentParser, DiciphrException )
+from diciphr.nifti_utils import read_nifti, read_dwi, multiply_images, has_nifti_ext
+from diciphr.diffusion import round_bvals, extract_b0, bet2_mask_nifti, extract_shells_from_multishell_dwi
 import nibabel as nib
 
 DESCRIPTION = '''
@@ -14,7 +14,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='Extract_B0'
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-d',action='store',metavar='dwi_file',dest='dwi_file',
                     type=str, required=True, 
                     help='The DWI filename in Nifti format.'
@@ -39,14 +39,6 @@ def buildArgsParser():
                     required=False, default=False, 
                     help='Do not average the B0, return a 4D Nifti.'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
@@ -54,7 +46,7 @@ def main(argv):
     args = parser.parse_args(argv)
     output_dir = os.path.dirname(os.path.realpath(args.output_base))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)    
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     check_inputs(args.dwi_file, nifti=True)
     check_inputs(output_dir, directory=True)
     if args.bval_file:
@@ -66,9 +58,9 @@ def main(argv):
             bval_file=args.bval_file, bvec_file=args.bvec_file, 
             run_bet=args.run_bet,
             no_average=args.no_average)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def run_extract_b0(dwi_file, output_base, bval_file=None, bvec_file=None, run_bet=False, no_average=False):
     ''' 

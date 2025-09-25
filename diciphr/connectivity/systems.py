@@ -1,5 +1,5 @@
-from ..utils import DiciphrException
-from .connmat_utils import normalize_mat
+from diciphr.utils import DiciphrException
+from diciphr.connectivity.connmat_utils import normalize_mat
 from collections import OrderedDict
 import numpy as np
 

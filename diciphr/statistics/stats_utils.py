@@ -1,13 +1,8 @@
-import os, sys, logging
+import logging
 import numpy as np
-import nibabel as nib
 import pandas as pd
-import statsmodels.formula.api as smf
-import scipy.stats
 import patsy
-from patsy import dmatrix
-from collections import OrderedDict
-from ..utils import DiciphrException, logical_or, logical_and, is_string
+from diciphr.utils import DiciphrException, logical_or, logical_and, is_string, force_to_list
 
 class DiciphrStatsException(DiciphrException): pass
 
@@ -76,11 +71,8 @@ def make_design(cohort, formula, centralize=[], filter=[], treatments={}, interc
     logging.debug("diciphr.statistics.utils.make_design")
     logging.info("Dataframe has {} entries.".format(len(cohort)))
     # User defined filters
-    if is_string(centralize):
-        # should be list 
-        centralize = [ centralize ]
-    if is_string(filter):
-        filter = [ filter ]
+    centralize = force_to_list(centralize)
+    filter = force_to_list(filter)
     for expr in filter:
         logging.info("Applying filter {}".format(expr))
         cohort = filter_cohort(cohort, expr)

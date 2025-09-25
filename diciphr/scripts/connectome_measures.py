@@ -1,15 +1,15 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback, shutil
-from ..utils import ( check_inputs, make_dir, 
-                protocol_logging, DiciphrException )
-from ..connectivity.connmat_utils import read_connmat, density, nodestrength, degree, prune_mat
-from ..connectivity.topology import ( efficiency_bin, efficiency_wei,
-                        betweenness_bin, betweenness_wei, 
-                        assortativity_bin, assortativity_wei,
-                        transitivity_bin, transitivity_wei,
-                        pathlength_wei, pathlength_bin,
-                        modularity_louvain_wei, modularity_louvain_bin )
+import os, sys, logging
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
+                    DiciphrArgumentParser, DiciphrException )
+from diciphr.connectivity.connmat_utils import read_connmat, density, nodestrength, degree, prune_mat
+from diciphr.connectivity.topology import ( efficiency_bin, efficiency_wei,
+                    betweenness_bin, betweenness_wei, 
+                    assortativity_bin, assortativity_wei,
+                    transitivity_bin, transitivity_wei,
+                    pathlength_wei, pathlength_bin,
+                    modularity_louvain_wei, modularity_louvain_bin )
 import numpy as np
 import pandas as pd
 from glob import glob 
@@ -21,7 +21,7 @@ DESCRIPTION = '''
 PROTOCOL_NAME='Connectome_Measures'    
     
 def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
+    p = DiciphrArgumentParser(description=DESCRIPTION)
     p.add_argument('-m', action='store', metavar='mat', dest='matfile',
                     type=str, required=True, 
                     help='The connmat filenames. Either a direct path or a template with {s} in the place of the subject ID or matching string.'
@@ -56,14 +56,6 @@ def buildArgsParser():
     p.add_argument('-n', '--nodes', action='store_true', dest='nodes', 
                     required=False, default=None, help='A text file containing the list of node names.'
                     )
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
     return p
     
 def main(argv):
@@ -71,7 +63,7 @@ def main(argv):
     args = parser.parse_args(argv)
     output_dir = os.path.dirname(os.path.realpath(args.output_base))
     make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
+    protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
         if args.cohort:
             if args.header:
@@ -102,9 +94,9 @@ def main(argv):
             out_f = args.output_base+'_{}.csv'.format(d)
             logging.info('Writing sheet to filename {}'.format(out_f))
             df.to_csv(out_f, sep=',', index=True, header=True, index_label='Subject')
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
+    except Exception:
+        logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
+        raise
     
 def connmat_measures(matfiles, subjects, densities, node_names=None, global_=True, local_=True, binary=True, weighted=True):
     dfs = dict([ (d, pd.DataFrame(index=subjects)) for d in densities ])

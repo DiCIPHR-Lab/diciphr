@@ -4,9 +4,8 @@ import os, sys, shutil, logging
 import numpy as np
 from collections import OrderedDict
 from scipy.stats import mannwhitneyu, ttest_ind, norm, gamma
-from ..resources import labels_86, labels_87, labels_wm
-from ..statistics.utils import fdr, dmatrix
-from .connmat_utils import symmetric_mat_from_upper_mask
+from diciphr.statistics.utils import fdr, dmatrix
+from connmat_utils import symmetric_mat_from_upper_mask
 
 ##########################
 ### Plotting Functions ###
