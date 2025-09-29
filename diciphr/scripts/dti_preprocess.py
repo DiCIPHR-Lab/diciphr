@@ -1,7 +1,6 @@
 #! /usr/bin/env python
 
 import os, sys, logging, time
-from collections import OrderedDict
 from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
                DiciphrArgumentParser, DiciphrException )
 from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi, 
@@ -9,7 +8,7 @@ from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi,
 from diciphr.diffusion import ( concatenate_dwis, round_bvals, extract_b0, 
                extract_shells_from_multishell_dwi, extract_gaussian_shells, 
                mppca_denoise, gibbs_unringing, n4_bias_correct_dwi, bet2_mask_nifti, 
-               most_gradients_pe, prepare_acqparams_json, prepare_acqparams_nojson, 
+               prepare_acqparams_json, prepare_acqparams_nojson, 
                run_topup, apply_topup, fsl_eddy, fsl_eddy_post_topup, save_eddy_text, 
                estimate_tensor, TensorScalarCalculator )
 
@@ -105,11 +104,6 @@ def buildArgsParser():
                     )  
     
     g_o = p.add_argument_group('Miscellaneous options')
-    g_o.add_argument('-A', '--all-pes', action='store_true', dest='keep_all_pes',
-                    help='If provided, will concatenate all phase encoding dirs into final DWI image. ' + 
-                    'Use for data acquired with full sequences repeated with opposing phase encoding dirs. ' + 
-                    'Default will keep the phase encoding direction with the most number of weighted volumes.'
-                    )
     g_o.add_argument('-r', '--resample', action='store', metavar='<float>', dest='resample',
                     type=float, required=False, default=0, 
                     help='Resample DWI to an isotropic resolution. Default is 0, for no resampling.'
@@ -167,7 +161,7 @@ def main(argv):
                 logging.info('Outputs of a previous run of FSL topup found')
         run_dti_preprocess(args.subject, args.output_dir, args.dwi_filenames, mask=args.mask, 
                         topup=args.topup, config=args.config, index=args.index, acqparams=args.acqparams,
-                        keep_all_pes=args.keep_all_pes, extract_shell=args.extract_shell, normalize=args.normalize, 
+                        extract_shell=args.extract_shell, normalize=args.normalize, 
                         no_moco=args.no_moco, denoise=args.denoise, gibbs=args.gibbs,
                         acquisition_slicetype=args.acquisition_slicetype,
                         bias_corr=args.bias_corr, bias_mask=args.bias_mask,
@@ -178,21 +172,13 @@ def main(argv):
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
 
-def group_by_phaseenc(dwi_images, phase_encs, readout_times):
-    ret = OrderedDict()
-    for i, (dwi, phase_enc, readout_time) in enumerate(zip(dwi_images, phase_encs, readout_times)):
-        if phase_enc not in ret.keys():
-            ret[phase_enc] = [] 
-        ret[phase_enc].append((i, dwi, phase_enc, readout_time))
-    return ret 
-
 def unique_acqparams(acqparams_list):
     uniq = set()
     for acqparams_line in acqparams_list:
         acq = acqparams_line[:3]
         uniq.add(tuple(acq))
     return len(uniq)
-  
+
 def dwi_filenames_from_directory(directory):
     all_files = sorted(os.listdir(directory))
     bval_files = list(filter(lambda fn: fn.endswith('.bval'), all_files))
@@ -212,7 +198,7 @@ def dwi_filenames_from_directory(directory):
 def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bval_filenames=[], bvec_filenames=[], 
                mask=None, topup=None, config=None, acqparams=None, index=None, extract_shell=None, normalize=False, 
                no_moco=False, denoise=False, gibbs=False, acquisition_slicetype='axial', 
-               replace_outliers=False, phase_encs=[], readout_time=0.062, keep_all_pes=False,
+               replace_outliers=False, phase_encs=[], readout_time=0.062, 
                bias_corr=True, bias_mask=None, bias_iterations=[50,50,50,50], bias_threshold=0.001, 
                resample=0, bet_f=0.2, bet_g=0.0):
     # log some info
@@ -238,7 +224,6 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
     
     # Output filenames
     dwi_processed_filename = os.path.join(output_dir, f"{subject}_DWI_preprocessed.nii.gz")
-    # noise_filename = os.path.join(output_dir, f"{subject}_denoising_diff.nii.gz")
     mask_filename = os.path.join(output_dir, f"{subject}_tensor_mask.nii.gz")
     tensor_filename = os.path.join(output_dir, f"{subject}_tensor.nii.gz")
     fa_filename = os.path.join(output_dir, f"{subject}_tensor_FA.nii.gz")
@@ -285,19 +270,17 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
         if len(phase_encs) > 0:
             logging.info("Get acquisition parameters without .json files")
         all_acqparams = [prepare_acqparams_nojson(readout_time, phase_enc) for phase_enc in phase_encs]
+
     # Array of which DWI images to keep in output 
-    if keep_all_pes or len(all_acqparams) == 0:
-        keep_dwis = [ True for dwi in dwi_filenames ]
-    else:
-        keep_dwis = most_gradients_pe(bval_arrays, all_acqparams)
-    if not all(keep_dwis):
-        main_phase_enc = [p for p,k in zip(phase_encs, keep_dwis) if k][0]
-        topup_phase_enc = [p for p,k in zip(phase_encs, keep_dwis) if not k][0]
-        logging.info(f"Processing diffusion images with predominant phase-encoding direction {main_phase_enc}")
-        logging.info(f"Will use diffusion images with phase-encoding direction {topup_phase_enc} only for topup")
-    else:
-        logging.info("Processing all provided diffusion images")
-        
+    keep_dwis = [len(bval[bval>0])>=6 and len(bval[bval==0])>=1 for bval in bval_arrays]
+    for fn, k in zip(dwi_filenames, keep_dwis):
+        if k or unique_acqparams(all_acqparams) == 1:
+            logging.info(f"DWI {fn} will be pre-processed")
+        else:
+            logging.info(f"DWI {fn} will be used for topup and discarded")
+    if not any(keep_dwis):
+        raise ValueError("None of DWI inputs have at least 6 weighted volumes and at least 1 unweighted volume. Input is invalid")
+    
     # 3. Topup before denoising
     if topup:
         # Topup prefix was provided at command line and existence of files has been checked 
@@ -306,13 +289,6 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
             acqparams = topup+'_acqparams.txt'
         if not index:
             index = topup+'_index.txt'
-#        if os.path.exists(topup+'_b0u.nii.gz'):
-#            unwarped_b0_im = read_nifti(topup+'_b0u.nii.gz')
-#            if len(unwarped_b0_im.shape) == 4:
-#                unwarped_b0_im = split_image(unwarped_b0_im)[0]
-#        else:
-#            logging.info("Creating undistorted B0 image with applytopup on first B0 to estimate a brain mask")
-#            unwarped_b0_im = apply_topup(extract_b0(dwi_ims[0], bval_arrays[0], first=True), topup, acqparams)
         logging.info("Creating undistorted B0 image with applytopup on first B0 to estimate a brain mask")
         unwarped_b0_im = apply_topup(extract_b0(dwi_ims[0], bval_arrays[0], first=True), topup, acqparams)
     elif unique_acqparams(all_acqparams) > 1:
