@@ -916,23 +916,6 @@ def prepare_index(*bval_arrays, average_b0s=False):
                 index.append(j)
     return index 
 
-def most_gradients_pe(bval_arrays, all_acqparams):
-    logging.debug('diciphr.diffusion.most_gradients_pe')
-    # Count non-zero gradients in each bval array
-    nonzero_counts = [np.count_nonzero(bval) for bval in bval_arrays]
-    # Accumulate non-zero counts per unique acqparams
-    acqparam_counts = {}
-    for bval_count, ap in zip(nonzero_counts, all_acqparams):
-        key = tuple(ap)
-        acqparam_counts[key] = acqparam_counts.get(key, 0) + bval_count
-    # Find the maximum count
-    max_count = max(acqparam_counts.values())
-    # Identify all acqparams that tie for the maximum
-    max_aps = {ap for ap, count in acqparam_counts.items() if count == max_count}
-    # Return True for entries matching any of the max_aps
-    logging.debug(f'{[tuple(ap) in max_aps for ap in all_acqparams]}')
-    return [tuple(ap) in max_aps for ap in all_acqparams]
-
 def pad_image_for_topup(nifti_img):
     nifti_img.shape 
     x_adjust = [0,0]
