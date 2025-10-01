@@ -1239,7 +1239,7 @@ def fsl_eddy_rotate_bvecs(bvecs, eddy_parameters):
       
 def fsl_eddy_post_topup(dwi_im, bvals, bvecs, topup_prefix, acqparamstxt, indextxt, mask_im, 
                         unwarped_b0_im=None, replace_outliers=True):
-    eddy_exe = 'eddy'
+    eddy_exe = 'eddy_cpu'
     with TempDirManager(prefix='fsl_eddy_post_topup') as manager:
         tmpdir = manager.path()
         dwi_filename = os.path.join(tmpdir, 'dwi.nii.gz')
@@ -1315,7 +1315,7 @@ def fsl_eddy_post_topup(dwi_im, bvals, bvecs, topup_prefix, acqparamstxt, indext
     
 def fsl_eddy(dwi_im, bvals, bvecs, mask_im, readout_time=0.062, replace_outliers=False):
     logging.debug('diciphr.diffusion.fsl_eddy')
-    eddy_exe = 'eddy'
+    eddy_exe = 'eddy_cpu'
     with TempDirManager(prefix='fsl_eddy') as manager:
         tmpdir = manager.path()
         dwi_filename = os.path.join(tmpdir, 'dwi.nii.gz')
