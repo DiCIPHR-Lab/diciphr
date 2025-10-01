@@ -294,7 +294,7 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
     elif unique_acqparams(all_acqparams) > 1:
         # run topup
         logging.info("Run topup")
-        topup = run_topup(dwi_ims, bval_arrays, bvec_arrays, all_acqparams, topup_base, keep_dwis=keep_dwis)
+        topup = run_topup(dwi_ims, bval_arrays, bvec_arrays, all_acqparams, topup_base, keep_dwis)
         acqparams = topup+'_acqparams.txt'
         index = topup+'_index.txt'
         unwarped_b0_im = read_nifti(topup+'_b0u.nii.gz')

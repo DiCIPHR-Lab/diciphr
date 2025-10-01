@@ -100,13 +100,13 @@ def main(argv):
         else:
             dwis_read = [read_dwi(dwifn, force=True) for dwifn in args.dwi_files]
         # convert list of [(dwi,bval,bvec)] tuples into list of dwis, list of bvals, list of bvecs 
-        dwis, bvals, bvecs = map(list, tuple(zip(*dwis_read)))
-        bvals = [round_bvals(bv) for bv in bvals]
+        dwi_ims, bval_arrays, bvec_arrays = map(list, tuple(zip(*dwis_read)))
+        bval_arrays = [round_bvals(bv) for bv in bval_arrays]
         
         # Get acquisition parameters from json files or from command line 
         if args.json_files:
             logging.info("Get acquisition parameters from .json files")
-            all_acqparams = [prepare_acqparams_json(fn, dwi_im) for fn, dwi_im in zip(args.json_files, dwis)]
+            all_acqparams = [prepare_acqparams_json(fn, dwi_im) for fn, dwi_im in zip(args.json_files, dwi_ims)]
         else:
             logging.info("Get acquisition parameters without .json files")
             all_acqparams = [prepare_acqparams_nojson(args.readout_time, phase_enc) for phase_enc in args.phase_encs]
@@ -115,17 +115,19 @@ def main(argv):
             raise ValueError('Multiple phase encoding directions not detected')
         
         # Array of which DWI images to keep in output 
-        if args.keep_all_pes:
-            keep_dwis = [ True for dwi in dwis ]
-        else:
-            keep_dwis = most_gradients_pe(bvals, all_acqparams)
-        if not all(keep_dwis):
-            topup_phase_enc = [p for p,k in zip(args.phase_encs, keep_dwis) if not k][0]
-            logging.info(f"Diffusion images with phase-encoding direction {topup_phase_enc} used only for topup")
-            
+        keep_dwis = [len(bval[bval>0])>=6 and len(bval[bval==0])>=1 for bval in bval_arrays]
+        delete_index = False
+        if not any(keep_dwis):
+            logging.warning("None of DWI inputs have at least 6 weighted volumes and at least 1 unweighted volume. To apply to DWI data, index text file should be created manually.")
+            keep_dwis = [True for bval in bval_arrays]
+            delete_index = True
+        
         # run topup
         logging.info("Run topup")
-        run_topup(dwis, bvals, bvecs, all_acqparams, args.output_base, keep_dwis=keep_dwis, config=args.config)
+        run_topup(dwi_ims, bval_arrays, bvec_arrays, all_acqparams, args.output_base, keep_dwis, config=args.config)
+        if delete_index and os.path.exists(f"{args.outputbase}_index.txt"):
+            os.remove(f"{args.outputbase}_index.txt")
+        
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
