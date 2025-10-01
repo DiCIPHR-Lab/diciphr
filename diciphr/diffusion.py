@@ -883,14 +883,16 @@ def prepare_acqparams_nojson(readout_time, phaseenc):
     acqparams_line.append(readout_time)
     return acqparams_line
 
-def prepare_index(*bval_arrays, average_b0s=False):
+def prepare_index(bval_arrays, keep_array, average_b0s=False):
     """
     Generates an index list for multiple b-value arrays, identifying and grouping b=0 values.
 
     Parameters:
     ----------
-    *bval_arrays : array-like
-        One or more arrays containing b-values
+    bval_arrays : list of array-like
+        List of arrays of bvals of shape (1,N1), (1,N2), ... 
+    keep_array  : list of bool 
+        List of True/False per bval array whether the volumes corresponding to provided bval array will be kept after eddy
     average_b0s : bool, optional (default=False)
         If True, all b=0 values across arrays are grouped under the same index.
         If False, b=0 values are indexed individually based on their occurrence.
@@ -905,15 +907,17 @@ def prepare_index(*bval_arrays, average_b0s=False):
     index=[]
     j=0
     k=0
-    for bvals in bval_arrays:
+    for keep, bvals in zip(keep_array, bval_arrays):
         k+=1
         for b in np.asarray(bvals).flatten():
             if b == 0:
                 j+=1 
             if j<1 or average_b0s:
-                index.append(k)
+                if keep:
+                    index.append(k)
             else:
-                index.append(j)
+                if keep:
+                    index.append(j)
     return index 
 
 def pad_image_for_topup(nifti_img):
@@ -967,9 +971,13 @@ def synb0_disco(synb0_sif, fslicense, dwi_img, bvals, acqparams, t1_img, t1_mask
     return result_img 
 
 def run_topup(dwi_images, bval_arrays, bvec_arrays, acqparams_list, output_base, 
-              keep_dwis=[], slspec=None, average_b0s=False, mcflirt=False, first_b0=False, 
+              keep_dwis, slspec=None, average_b0s=False, mcflirt=False, first_b0=False, 
               mbfactor=None, concatenate=False, config=None):
     logging.debug("diciphr.diffusion.run_topup")
+    logging.debug(f"bval_arrays: {bval_arrays}")
+    logging.debug(f"acqparams_list: {acqparams_list}")
+    logging.debug(f"keep_dwis: {keep_dwis}")
+    logging.debug(f"average_b0s or first_b0: {average_b0s or first_b0}")
     index = []
     acqparams = [] 
     b0_images = [] 
@@ -980,7 +988,7 @@ def run_topup(dwi_images, bval_arrays, bvec_arrays, acqparams_list, output_base,
         n = 1 if len(b0_img.shape) == 3 else b0_img.shape[3]
         for nn in range(n):
             acqparams.append(acqparams_line)
-    index = prepare_index(*[bval for bval,k in zip(bval_arrays, keep_dwis) if k], average_b0s=average_b0s or first_b0)
+    index = prepare_index(bval_arrays, keep_dwis, average_b0s=average_b0s or first_b0)
     b0_img = concatenate_niftis(*b0_images)    
     # save b0 image, acqparams, index, slspec to txt 
     # b0_img.to_filename(output_base+'_b0s.nii.gz')
@@ -1059,7 +1067,7 @@ def run_topup_post_synb0(dwi_img, bvals, bvecs, synb0_img, acqparams_line, outpu
             acqparams.append(acqparams_line)
         b0s.append(synb0_img)
         acqparams.append(acqparams_line2)
-        index = prepare_index(bvals)
+        index = prepare_index([bvals], [True], average_b0s=True)
         np.savetxt(f"{output_base}_acqparams.txt", np.array(acqparams), delimiter=' ', fmt='%i %i %i %0.8f')
         np.savetxt(f"{output_base}_index.txt", np.array(index).reshape((1,len(index))), delimiter=' ', fmt='%i')
         # concatenate b0s and dwis
