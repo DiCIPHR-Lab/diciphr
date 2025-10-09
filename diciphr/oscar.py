@@ -44,7 +44,7 @@ class Oscar(object):
         palpha = kwargs.get('palpha', 0.05)
         self.abs_thresh = kwargs.get('abs_thresh', 0.0)
         if pmask is not None:
-            _pmask = nifti_image((pmask.get_fdata() < float(palpha))*1, pmask.affine)
+            _pmask = nifti_image((pmask.get_fdata() < float(palpha)).astype(np.uint8), pmask.affine)
             self.overlay_imgs = [ multiply_images(olay_img, _pmask) for olay_img in self.overlay_imgs ]
         if self.abs_thresh > 0:
             self.overlay_imgs = [ absolute_threshold_image(olay_img, self.abs_thresh) for olay_img in self.overlay_imgs ]

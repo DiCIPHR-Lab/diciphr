@@ -153,7 +153,15 @@ def nifti_image(data, affine, header=None, dtype=None, intent=0, **kwargs):
         The nifti image instance
     '''
     if dtype is not None:
-        data=data.astype(dtype)
+        data = data.astype(dtype)
+    else:
+        dtype = data.dtype
+        if dtype == np.dtype('int64'):
+            logging.warning('Truncating int64 dtype to int32 because of Nifti incompatibility with 64-bit int')
+            data = data.astype('int32')
+        elif dtype == np.dtype('uint64'):
+            logging.warning('Truncating uint64 dtype to uint32 because of Nifti incompatibility with 64-bit unsigned int')
+            data = data.astype('uint32')
     im = nib.Nifti1Image(data, affine, header=header)
     im.header.set_sform(affine)
     im.header.set_qform(affine)
@@ -346,10 +354,7 @@ def write_dwi(filename,dwi_im,bvals,bvecs):
     bvecfile=strip_nifti_ext(filename)+'.bvec'
     np.savetxt(bvalfile,bvals,fmt="%0.1f")
     np.savetxt(bvecfile,bvecs,fmt="%0.8f")
-    
-def intersection_mask(nifti_files):
-    return nifti_image(logical_and(*[(read_nifti(f).get_fdata() > 0) for f in nifti_files])*1, read_nifti(nifti_files[0]).affine)
-    
+
 ###############################################
 ############  NIFTI Orientation  ##############
 ###############################################
@@ -735,7 +740,7 @@ def cut_region(roi_img, k):
 ############################################    
 def threshold_image(nifti_img, threshold_value=0):
     data = nifti_img.get_fdata()
-    data_t = (data > threshold_value)*1 
+    data_t = (data > threshold_value).astype(np.uint8)
     img = nifti_image(data_t, nifti_img.affine)
     return img 
 

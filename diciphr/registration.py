@@ -1,159 +1,121 @@
 #! /usr/bin/env python
 
-import os, sys, argparse, logging, traceback
+import os, logging, shutil
 from diciphr.utils import DiciphrException, ExecCommand, TempDirManager, which
-from diciphr.nifti_utils import ( read_nifti, write_nifti, reorient_nifti, 
-            resample_image, mask_image, threshold_image )
-from diciphr.diffusion import remove_dwi_gradients
+from diciphr.nifti_utils import ( write_nifti, resample_image, mask_image, threshold_image )
 import numpy as np
-
-DESCRIPTION = '''
-    Runs ANTs Registration
-'''
-
-PROTOCOL_NAME='Ants_Registration'    
-    
-def buildArgsParser():
-    p = argparse.ArgumentParser(description=DESCRIPTION)
-    p.add_argument('-m', '-mode', action='store', metavar='mode', dest='mode', 
-                    type=str, required=True, 
-                    help='Mode of operation: Options: DTI-T1, T1-Eve, DTI-Eve, T1-MNI, IntraSubject, '
-                    )
-    p.add_argument('-s',action='store',metavar='<dir>',dest='subject',
-                    type=str, required=True, 
-                    help='Subject'
-                    )
-    p.add_argument('-o',action='store',metavar='<dir>',dest='outdir',
-                    type=str, required=True, 
-                    help='Output directory'
-                    )
-    p.add_argument('-t',action='store',metavar='<t1>',dest='t1file',
-                    type=str, required=True, 
-                    help='Input T1 filename'
-                    )
-    p.add_argument('-d',action='store',metavar='<dwi>',dest='dwifile',
-                    type=str, required=True, 
-                    help='Input DWI filename'
-                    )
-    
-    p.add_argument('-i',action='store',metavar='<str>',dest='initialize',
-                    type=str, required=True, 
-                    help='Registration initialization method. Options: antsAI (default for DTI-T1), identity, origin, centroid, a .txt (ITK-Snap) or .mat (ANTs) affine transformation file'
-                    )
-    p.add_argument('-T', '--transform-type', action='store', metavar='<str>', dest='transform_type',
-                    type=str, required=False, default='r', 
-                    help='The transform type. Options: r (rigid), a (2 stage affine), s (3 stage fully deformable SyN), rs (restricted SyN, for DTI-T1 method)' 
-                    )
-    # p.add_argument(convergence stuff) 
-    
-    
-    
-    p.add_argument('--debug', action='store_true', dest='debug',
-                    required=False, default=False, 
-                    help='Debug mode'
-                    )
-    p.add_argument('--logfile', action='store', metavar='log', dest='logfile', 
-                    type=str, required=False, default=None, 
-                    help='A log file. If not provided will print to stderr.'
-                    )
-    return p
-    
-def main(argv):
-    parser = buildArgsParser()
-    args = parser.parse_args(argv)
-    gradients = list(map(int,args.gradients.split(',')))
-    output_dir = os.path.dirname(os.path.realpath(args.output))
-    make_dir(output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, args.logfile, debug=args.debug)
-    try:
-        dwifile = check_inputs(args.dwifile, nifti=True)
-        check_inputs(output_dir, directory=True)
-        run_remove_dwi_gradients(dwifile, args.output, gradients)
-    except Exception as e:
-        logging.error(''.join(traceback.format_exception(*sys.exc_info())))
-        raise e
     
 def ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=None, t1_mask_img=None, dti_mask_img=None,
         resample_inputs=True, initial=None, syn=False, phase_enc='AP'):
     weight_fa=0.3
     weight_b0=0.7 
-    if phase_enc.upper() in ['AP','PA']:
-        restrict_deformation = '0.1x1.0x0.1'
-    if phase_enc.upper() in ['LR','RL']:
-        restrict_deformation = '1.0x0.1x0.1'
-    if phase_enc.upper() in ['SI','IS']:
-        restrict_deformation = '0.1x0.1x1.0'
+    if syn:
+        if phase_enc.upper() in ['LR','RL']:
+            restrict_deformation = '1.0x0.1x0.1'
+        if phase_enc.upper() in ['AP','PA']:
+            restrict_deformation = '0.1x1.0x0.1'
+        if phase_enc.upper() in ['SI','IS']:
+            restrict_deformation = '0.1x0.1x1.0'
     
+    if t1_mask_img is None:
+        t1_mask_img = threshold_image(t1_img)
+    if dti_mask_img is None:
+        dti_mask_img = threshold_image(b0_img)
+        
     # keep original resolution images as reference to write outputs 
     dti_ref_img = b0_img 
     t1_ref_img = t1_img 
-    
     if resample_inputs:
         t1_img = resample_image(t1_img, [1,1,1]) 
-        b0_img = resample_image(t1_img, [1,1,1]) 
-        # etc ... do masks ... 
-        # store orig 
-        
+        b0_img = resample_image(b0_img, [1,1,1]) 
+        t1_mask_img =  resample_image(t1_mask_img, master=t1_img, interp='NearestNeighbor')
+        dti_mask_img = resample_image(dti_mask_img, master=b0_img, interp='NearestNeighbor')
+        if fa_img:
+            fa_img = resample_image(fa_img, master=b0_img)
+    
     # Apply masks to data 
-    if t1_mask_img is None:
-        t1_mask_img = threshold_image(t1_img)
     t1_masked_img = mask_image(t1_img, t1_mask_img)
-    if dti_mask_img is None:
-        dti_mask_img = threshold_image(b0_img)
     b0_masked_img = mask_image(b0_img, dti_mask_img)
-    fa_masked_img=None 
+    fa_masked_img = None 
     if fa_img:
         fa_masked_img = mask_image(fa_img, dti_mask_img)
     
-    # Resample inputs to 1mm 
-    if t1_mask_img:
-        t1_mask_img = resample_image(t1_mask_img)
-    else:
-        t1_mask_img = threshold_image(t1_img)
-    b0_img = resample_image(b0_img, [1,1,1])
-    if fa_img:
-        fa_img = resample_image(fa_img, [1,1,1])
-    # Apply masks 
-    # 1. Ants AI 
-    
     with TempDirManager(prefix='Registration_DTI-T1') as manager:
         tmpdir = manager.path()
+        tmp1prefix = os.path.join(tmpdir, 'rigid_dti-t1') 
+        tmp2prefix = os.path.join(tmpdir, 'syn_dti-t1') 
+        b0filename = os.path.join(tmpdir, 'b0.nii.gz')
+        t1filename = os.path.join(tmpdir, 't1.nii.gz')
+        fafilename = os.path.join(tmpdir, 'fa.nii.gz')
+        b0_target = os.path.join(tmpdir, 'b0_dico.nii.gz')
+        t1ref_filename = os.path.join(tmpdir, 't1_ref_img.nii.gz')
+        dtiref_filename  = os.path.join(tmpdir, 'dti_ref_img.nii.gz')
+        t1rigid_filename = os.path.join(tmpdir, 'T1-DTI.nii.gz')
+        write_nifti(b0filename, b0_masked_img)
+        write_nifti(t1filename, t1_masked_img)
+        write_nifti(t1ref_filename, t1_ref_img)
+        write_nifti(dtiref_filename, dti_ref_img)
+        if fa_img:
+            write_nifti(fafilename, fa_masked_img)
+        
         # antsAI
+        logging.info("Auto initialization with antsAI")
         antsAI_transform = os.path.join(tmpdir, 'antsAI_rigid.txt')
-        antsAI(t1_img, b0_img, antsAI_transform)
-        # Rigid registration DTI to T1  
-        AR = AntsRegistration(output_prefix, initialize=antsAI_transform, winsorize=[0.025,0.975])
-        AR.add_stage([t1_target], [b0_target], 'Rigid', 'MI', [100,70,50,20], [8,4,2,1], [3,2,1,0],
-                     convergence_threshold=1e-6, convergence_window=10, metric_weights=[1],
-                     samplingStrategy='Regular', samplingPercentage=0.25, smoothing_unit='vox'
-                     
-                     )
-    '''
-    def add_stage(self, fixed_images, moving_images, transform, metric, convergence, shrink_factors, smoothing_sigmas,
-                    restrict_deformation=None, metric_params=[], metric_weights=[1],
-                    samplingStrategy='Regular', samplingPercentage=0.25, transform_params=[],
-                    smoothing_unit='vox', convergence_threshold=1e-6, convergence_window=10):
-        # fixed - list of fixed filenames of length N 
-    
-    '''
+        antsAI(t1filename, b0filename, antsAI_transform)
+        # rigid 
+        logging.info("Rigidly register DTI to T1")
+        AR = AntsRegistration(tmp1prefix, initialize=antsAI_transform, winsorize=[0.025,0.975])
+        AR.add_stage([t1filename], [b0filename], 'Rigid', 'MI', [100,70,50,20], [8,4,2,1], [3,2,1,0],
+                         metric_weights=[1],
+                         samplingStrategy='Regular', samplingPercentage=0.25, smoothing_unit='vox')
+        AR.run()
+        dtit1rigid = f"{tmp1prefix}0GenericAffine.mat"
+        if syn:
+            AR = AntsRegistration(tmp2prefix, initialize=dtit1rigid, invert_initial=True, initial_xfm_moving=False, winsorize=[0.025,0.975])
+            if fa_img:
+                AR.add_stage([t1filename, t1filename], [b0filename, fafilename], 'SyN', 'MI', [100,70,50,20], [8,4,2,1], [3,2,1,0],
+                         metric_weights=[weight_b0, weight_fa], restrict_deformation=restrict_deformation) #
+                         #samplingStrategy='Regular', samplingPercentage=0.25, smoothing_unit='vox')
+            else:
+                AR.add_stage([t1filename], [b0filename], 'SyN', 'MI', [100,70,50,20], [8,4,2,1], [3,2,1,0],
+                         metric_weights=[1], restrict_deformation=restrict_deformation) #,
+                         #convergence_threshold=1e-6, convergence_window=10,
+                         #samplingStrategy='Regular', samplingPercentage=0.25, smoothing_unit='vox')
+            AR.run()
+            dicowarp = f"{tmp2prefix}Warp.nii.gz"
+            dicoinvwarp = f"{tmp2prefix}InverseWarp.nii.gz"
+            # Apply dico warp to B0 image 
+            ants_apply_transforms(b0filename, b0_target, b0filename, [dicowarp])    
+            # Redo rigid with dico warped B0 image 
+            AR = AntsRegistration(tmp1prefix, initialize=antsAI_transform, winsorize=[0.025,0.975])
+            AR.add_stage([t1filename], [b0_target], 'Rigid', 'MI', [100,70,50,20], [8,4,2,1], [3,2,1,0],
+                             metric_weights=[1]) #,
+                             # samplingStrategy='Regular', samplingPercentage=0.25, smoothing_unit='vox')
+            AR.run()
+            ants_apply_transforms(t1ref_filename, t1rigid_filename, dtiref_filename, [dicowarp, dtit1rigid], invert=[0,1])  
+            shutil.copyfile(dicowarp, f"{output_prefix}_0dicoWarp.nii.gz")
+            shutil.copyfile(dicoinvwarp, f"{output_prefix}_0dicoInverseWarp.nii.gz")
+        else:
+            ants_apply_transforms(t1ref_filename, t1rigid_filename, dtiref_filename, dtit1rigid, invert=[1])  
+        shutil.copyfile(dtit1rigid, f"{output_prefix}_DTI-T1-0GenericAffine.mat")
+        shutil.copyfile(t1rigid_filename, f"{output_prefix}_T1-DTI.nii.gz")
     
 #def ants_registration_t1_eve():
 #def ants_registration_dti_eve():
 #def ants_registration_t1_mni():
-
 #def ants_registration_intrasubject(fixed_filename, moving_filename, outdir, subject, 
 #                transform='r', initialize='identity', ):
 
 
 def antsAI(fixed_filename, moving_filename, output_transform_file, dimensionality=3, verbose=True, transform='Rigid'):
     cmd  = ['antsAI', '-d', str(dimensionality), '-t', transform, \
-                '-m', f"Mattes[{fixed_filename},{moving_filename},32,Regular,0.25]"
+                '-m', f"Mattes[{fixed_filename},{moving_filename},32,Regular,0.25]", 
                 '-o', output_transform_file, '-p', '0', '-v', (1 if verbose else 0)]
     return ExecCommand(cmd).run()
 
 class AntsRegistration():
     def __init__(self, output_prefix, initialize='identity', initial_fixed=None, initial_moving=None, 
-                invert_initial=False, dimensionality=3, warped_outputs=2, interpolation='Linear', 
+                invert_initial=False, initial_xfm_moving=True, dimensionality=3, warped_outputs=2, interpolation='Linear', 
                 histogram_matching=False, winsorize=[0.005,0.995], float=False, verbose=True
         ):    
         self.cmd=['antsRegistration']
@@ -161,7 +123,10 @@ class AntsRegistration():
         
         self.set_global_options(dimensionality=dimensionality, verbose=verbose, float=float, 
             interpolation=interpolation, histogram_matching=histogram_matching, winsorize=winsorize)
-        self.set_initial(initialize, initial_fixed, initial_moving, invert_initial)
+        if os.path.exists(initialize):
+            self.set_initial(initialize, initial_xfm_moving=initial_xfm_moving, invert=invert_initial)
+        elif initial_fixed and initial_moving:
+            self.set_initial(initialize, initial_fixed, initial_moving, invert_initial)
         self.set_outputs(output_prefix, warped_outputs)
     
     def set_outputs(self, output_prefix, warped_outputs=2):
@@ -186,7 +151,7 @@ class AntsRegistration():
         self.global_options.extend(['--interpolation',interpolation])
         if winsorize:
             self.global_options.extend(['--winsorize-image-intensities',f'[{winsorize[0]},{winsorize[1]}]'])
-        self.global_options.extend('--use-histogram-matching',('1' if histogram_matching else '0'))
+        self.global_options.extend(['--use-histogram-matching',('1' if histogram_matching else '0')])
     
     def set_initial(self, initialize='identity', fixed=None, moving=None, initial_xfm_moving=True, invert=False):
         initialize = str(initialize).strip()
@@ -195,8 +160,8 @@ class AntsRegistration():
             # --initial-fixed-transform or --initial-moving-transform respectively 
             # --initial-fixed-transform the moving image is pre-moved by the transform 
             # --initial-moving-transform the fixed image is pre-moved by the transform 
-            if not(fixed or moving) or (fixed and moving):
-                raise DiciphrException('For initializing with existing transform, exactly one of initial_fixed, initial_moving need to be True')
+#            if not(fixed or moving) or (fixed and moving):
+#                raise DiciphrException('For initializing with existing transform, exactly one of initial_fixed, initial_moving need to be True')
             if invert:
                 initialize = f'[{initialize},1]'
             if initial_xfm_moving:
@@ -224,7 +189,7 @@ class AntsRegistration():
     def add_stage(self, fixed_images, moving_images, transform, metric, convergence, shrink_factors, smoothing_sigmas,
                     restrict_deformation=None, metric_params=[], metric_weights=[1],
                     samplingStrategy='Regular', samplingPercentage=0.25, transform_params=[],
-                    smoothing_unit='vox', convergence_threshold=1e-6, convergence_window=10):
+                    smoothing_unit='vox', convergence_threshold='1e-6', convergence_window=10):
         # fixed - list of fixed filenames of length N 
         # moving - list of fixed moving filenames of length N 
         # metric_weights - list of floats of length N 
@@ -249,23 +214,23 @@ class AntsRegistration():
         if len(metric_weights)<len(fixed_images) and len(metric_weights)==1:
             metric_weights *= len(fixed_images)
         for fixed, moving, weight in zip(fixed_images, moving_images, metric_weights):
-            metric, metric_params = self._validate_metric_params(metric, metric_params)
+            metric, metric_params = self._validate_metric_params(metric, metric_params, samplingStrategy, samplingPercentage)
             metric_params = ','.join(map(str,metric_params))
             metric_cmd.extend(['--metric', f'{metric}[{fixed},{moving},{weight},{metric_params}]'])
         if not(len(convergence) == len(shrink_factors) == len(smoothing_sigmas)):
             raise DiciphrException("Iterables convergence, shrink_factors, and smoothing_sigmas do not match in length")
         # multi-stage options 
-        convergence_cmd = ['--convergence', ','.join([
+        convergence_cmd = ['--convergence', '['+','.join([
                     'x'.join(map(str,map(int,convergence))), 
-                    str(float(convergence_threshold)),
-                    str(int(convergence_window))
-                    ])]
+                    str(convergence_threshold),
+                    str(convergence_window)
+                    ])+']']
         shrink_factors_cmd = ['--shrink-factors', 'x'.join(map(str,map(int,shrink_factors)))]
         smoothing_cmd = ['--smoothing-sigmas', 'x'.join(map(str,map(int,shrink_factors)))+smoothing_unit]
-        self.stages += {
+        self.stages.append({
             'transform':transform,
             'cmd_array':transform_cmd+metric_cmd+convergence_cmd+shrink_factors_cmd+smoothing_cmd 
-        }
+        })
     
     def _validate_transform_params(self, transform, transform_params):
         if transform in ('Rigid', 'Affine', 'CompositeAffine', 'Similarity', 'Translation'):
@@ -292,7 +257,7 @@ class AntsRegistration():
             default_params=['NA']
         else: 
             raise DiciphrException("Unrecognized ANTs metric type: {0}".format(metric))
-        if samplingPercentage < 0 or samplingStrategy > 1:
+        if samplingPercentage < 0 or samplingPercentage > 1:
             raise DiciphrException("Sampling Percentage must be a float between 0 and 1")
         if len(metric_params) == 0:
             return (metric, default_params+[samplingStrategy,samplingPercentage])
@@ -394,6 +359,3 @@ def read_ants_affine_transform(transform_file):
             ('Translation',translation), 
             ('Inverse',inverse)))
     return ret
-    
-if __name__ == '__main__': 
-    main(sys.argv[1:])

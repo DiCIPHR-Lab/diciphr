@@ -1240,7 +1240,7 @@ def fsl_eddy_rotate_bvecs(bvecs, eddy_parameters):
         if np.linalg.norm(v):
             angle[i] = np.arctan2(np.linalg.norm(np.cross(v, v_rotated)), np.dot(v, v_rotated))
     max_transl_error = np.max(norm_diff)
-    max_rot_error = np.max(angle)*180/np.pi
+    max_rot_error = np.max(angle)*(180.0/np.pi)
     logging.info(f"{max_transl_error} mm is the maximum translation error")
     logging.info(f"{max_rot_error} degrees is the maximum rotation error")
     return bvecs_rotated.transpose()    
