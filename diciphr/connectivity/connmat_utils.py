@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 
-import os, sys, shutil, logging
+import logging
 import numpy as np
-import nibabel as nib
 
 def density(connmat, threshold=0):
     N = connmat.shape[0]
@@ -17,7 +16,7 @@ def nodestrength(connmat):
 def gmwmi_normalize(connmat, gmwmi_im, symmetrize=True, zero_diagonal=True):
     gmwmi_data = gmwmi_im.get_fdata()
     zooms = gmwmi_im.header.get_zooms()
-    voxels = ((gmwmi_data > 0)*1).sum()
+    voxels = (gmwmi_data > 0).sum()
     volume = voxels*zooms[0]*zooms[1]*zooms[2]
     connmat = connmat / volume 
     if symmetrize:
@@ -71,7 +70,7 @@ def is_binary(connmat):
 
 def binarize_mat(connmat):
     '''Binarize a matrix''' 
-    return (connmat>0)*1
+    return (connmat>0).astype(np.uint8)
     
 def normalize_mat(connmat):
     '''Min-max normalize a matrix''' 
@@ -80,7 +79,7 @@ def normalize_mat(connmat):
 def fischer_z_transform(connmat):
     ''' Fischer Z transform, e.g. for a functional connectome '''
     if np.min(connmat) < -1 or np.max(connmat) > 1:
-        raise DiciphrException('connmat has values outside the range [-1,1].')
+        raise ValueError('connmat has values outside the range [-1,1].')
     return 0.5 * np.log((1+connmat)/(1-connmat))
     
 def ut_indices(mat, diagonal=False):
@@ -97,7 +96,6 @@ def lt_indices(mat, diagonal=False):
 
 def prune_mat(connmat, density_target=0.15, abs=False):
     ''' Prune a single connectome to a desired target density, keeping the strongest edges. If abs=True, will return strongest positive or negative edges.'''
-    N = connmat.shape[0]
     if density_target > 1:
         density_target = float(density_target)/100
     if density_target == 1:
@@ -140,11 +138,11 @@ def consistency_filter_connmat(mat_array, controls_mat_array, target_density=Non
     cv = coefficient_of_variation(controls_mat_array)
     if target_density is not None:
         if target_density <= 1: 
-            target_density = target_density*100
+            target_density *= 100
         target_density = int(target_density)
         target_cv = np.percentile(cv[ut_indices(cv)],int(target_density))
     mask = ( cv < target_cv )
-    logging.info("Coeff. of variation (std/mean)={0}, density={1}".format(target_cv, density(mask*1)))
+    logging.info("Coeff. of variation (std/mean)={0}, density={1}".format(target_cv, density(mask.astype(np.uint8))))
     mat_array = (mat_array * mask[None,...])
     if return_mask:
         mask[lt_indices(mask)] = False
