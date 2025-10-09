@@ -74,7 +74,7 @@ def load_data_niftis(cohort, filename_template, mask_file=None):
         mask_img = read_nifti(mask_file)
     else:
         affine = read_nifti(filenames[0]).affine
-        mask_img = nifti_image((np.var(data, axis=0) > 0)*1, affine)
+        mask_img = nifti_image((np.var(data, axis=0) > 0).astype(np.uint8), affine)
     # convert data to 2d array of shape N, v  (subjects, voxels)
     data = data[:, mask_img.get_fdata() > 0]
     data = pd.DataFrame(data, index=cohort.index)
