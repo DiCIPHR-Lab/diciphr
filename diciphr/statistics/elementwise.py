@@ -1,16 +1,15 @@
 #! /usr/bin/env python
 
-import sys, logging, re 
+import logging, re 
 import pandas as pd
 import numpy as np
 from collections import OrderedDict
 import statsmodels.api as sm
-import statsmodels.formula.api as smf
 from patsy import dmatrix
 from scipy.stats import mannwhitneyu, anderson, pearsonr, spearmanr
-from diciphr.nifti_utils import nifti_image, intersection_mask
+from diciphr.nifti_utils import nifti_image
 from diciphr.statistics.stats_utils import fdr, filter_cohort
-from diciphr.utils import DiciphrException, TempDirManager, check_inputs, logical_or, logical_and
+from diciphr.utils import DiciphrException
 from diciphr.connectivity.connmat_utils import ut_to_square
     
 def assign_to_results(results, key, value, i, M, default=0.0):
@@ -69,7 +68,7 @@ def elementwise_ols(data, cohort, full_model, reduced_model=None, columns=None, 
         column_names = data.columns
         index = data.index
         data = data.get_values()
-    except Exception as e:
+    except Exception:
         column_names = np.arange(1,M+1)
         index = None
     endogs_full = list(filter(lambda c: bool(c), re.split('\)|\(|\+|\*|\:|\ ', full_model)))
@@ -186,11 +185,9 @@ def elementwise_ols(data, cohort, full_model, reduced_model=None, columns=None, 
     logging.debug('FDR Correction')
     for pval_key in pval_keys:
         qval_key = 'q_{}'.format(pval_key[2:])
-        dval_key = 'd_{}'.format(pval_key[2:])
-        tval_key = 't_{}'.format(pval_key[2:])
         fdrQ_key = 'fdrQ_{}'.format(pval_key[2:])
         results[qval_key] = fdr(results[pval_key])
-        results[fdrQ_key] = (results[qval_key] <= alpha)*1
+        results[fdrQ_key] = np.asarray(results[qval_key] <= alpha, dtype=np.uint8)
     residualized_data = pd.DataFrame(residualized_data, index=cohort.index, columns=column_names)
     return results, ret_models, residualized_data
     
