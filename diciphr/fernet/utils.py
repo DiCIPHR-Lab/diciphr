@@ -3,19 +3,16 @@ import nibabel as nib
 import numpy as np
 from scipy.ndimage.morphology import binary_erosion
 
-class NiftiException(Exception): 
-    pass
-
 def erode_mask(mask_data, iterations=1):
     '''Erode a mask N times using scipy binary_erosion.'''
-    mask_data = (mask_data > 0)*1
+    mask_data = (mask_data > 0).astype(np.uint8)
     mask_data[0,:,:] = 0 
     mask_data[:,0,:] = 0 
     mask_data[:,:,0] = 0 
     mask_data[-1,:,:] = 0
     mask_data[:,-1,:] = 0
     mask_data[:,:,-1] = 0
-    mask_erode_data = (binary_erosion(mask_data, iterations=iterations))*1
+    mask_erode_data = np.asarray(binary_erosion(mask_data, iterations=iterations), dtype=np.uint8)
     return mask_erode_data
     
 def strip_nifti_ext(filename):
@@ -25,7 +22,7 @@ def strip_nifti_ext(filename):
     elif filename[-4:] in ['.nii','.hdr','.img']:
         return filename[:-4]
     else:
-        raise NiftiException('Filename {} is not a Nifti path!'.format(filename))
+        raise ValueError('Filename {} is not a Nifti path!'.format(filename))
 
 def read_gradients(bval_file, bvec_file):
     '''Read bval and bvec files.
@@ -69,7 +66,7 @@ def read_dwi(filename, bval_file=None, bvec_file=None):
     if bvec_file is None:
         bvec_file = strip_nifti_ext(filename)+'.bvec'
     if not (os.path.exists(bval_file) and os.path.exists(bvec_file)):
-        raise NiftiException('Cannot find corresponding bval/bvec files for DWI image')
+        raise FileNotFoundError('Cannot find corresponding bval/bvec files for DWI image')
     else:
         bvals, bvecs = read_gradients(bval_file, bvec_file) 
     return dwi_im, bvals, bvecs
