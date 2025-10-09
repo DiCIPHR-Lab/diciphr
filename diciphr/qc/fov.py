@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-import nibabel as nib
 import pandas as pd
 from diciphr.nifti_utils import read_nifti
 from diciphr.diffusion import bet2_mask_nifti
@@ -9,7 +8,7 @@ from diciphr.diffusion import bet2_mask_nifti
 def mias(nifti_img, exception='raise'):
     # count volume (mm2) of non-zero voxels in Most Inferior Axial Slice (MIAS)
     try:
-        mask = (nifti_img.get_fdata() > 0)*1
+        mask = (nifti_img.get_fdata() > 0).astype(np.uint8)
         zooms = nifti_img.header.get_zooms()
         return mask[:,:,0].sum()*zooms[0]*zooms[1]*zooms[2]
     except Exception as e:
@@ -21,7 +20,7 @@ def mias(nifti_img, exception='raise'):
 def msas(nifti_img, exception='raise'):
     # count volume (mm2) of non-zero voxels in Most Superior Axial Slice (MSAS)
     try:
-        mask = (nifti_img.get_fdata() > 0)*1
+        mask = (nifti_img.get_fdata() > 0).astype(np.uint8)
         zooms = nifti_img.header.get_zooms()
         return mask[:,:,-1].sum()*zooms[0]*zooms[1]*zooms[2]
     except Exception as e:
