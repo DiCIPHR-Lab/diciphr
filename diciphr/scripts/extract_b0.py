@@ -2,10 +2,9 @@
 
 import os, sys, logging
 from diciphr.utils import ( check_inputs, make_dir, protocol_logging,
-                    DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import read_nifti, read_dwi, multiply_images, has_nifti_ext
-from diciphr.diffusion import round_bvals, extract_b0, bet2_mask_nifti, extract_shells_from_multishell_dwi
-import nibabel as nib
+                    DiciphrArgumentParser )
+from diciphr.nifti_utils import read_dwi, multiply_images, has_nifti_ext
+from diciphr.diffusion import round_bvals, extract_b0, extract_shells_from_multishell_dwi
 
 DESCRIPTION = '''
     Extract the B0 from a DWI volume, by averaging. 
@@ -31,10 +30,6 @@ def buildArgsParser():
                     type=str, required=False, default=None,
                     help='The bvecs file, if not given will strip Nifti extension off the DWI image to ascertain filename.'
                     )
-    p.add_argument('--bet', action='store_true', dest='run_bet', 
-                    required=False, default=False, 
-                    help='Skull strip the B0 with BET'
-                    )
     p.add_argument('--noavg', action='store_true', dest='no_average', 
                     required=False, default=False, 
                     help='Do not average the B0, return a 4D Nifti.'
@@ -56,13 +51,12 @@ def main(argv):
     try:    
         run_extract_b0(args.dwi_file, args.output_base, 
             bval_file=args.bval_file, bvec_file=args.bvec_file, 
-            run_bet=args.run_bet,
             no_average=args.no_average)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
-def run_extract_b0(dwi_file, output_base, bval_file=None, bvec_file=None, run_bet=False, no_average=False):
+def run_extract_b0(dwi_file, output_base, bval_file=None, bvec_file=None, no_average=False):
     ''' 
     Estimate a dti tensor
     
@@ -95,10 +89,6 @@ def run_extract_b0(dwi_file, output_base, bval_file=None, bvec_file=None, run_be
         b0_im, __, __ = extract_shells_from_multishell_dwi(dwi_im, bvals, bvecs, [0])
     else:
         b0_im = extract_b0(dwi_im, bvals)
-        if run_bet:
-            logging.info('Running BET on B0')
-            mask_im = bet2_mask_nifti(b0_im)
-            b0_im = multiply_images(b0_im, mask_im)
     if has_nifti_ext(output_base):
         output_b0_file = output_base
     else:

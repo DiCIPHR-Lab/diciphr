@@ -98,5 +98,10 @@ def registration_dti_t1(args):
     syn = args.phase_enc is not None 
     ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=fa_img, dti_mask_img=dti_mask_img, syn=syn, phase_enc=args.phase_enc)
 
+def registration_t1_eve(args):
+    check_inputs(args.t1_file, nifti=True)
+    t1_img = read_nifti(args.t1_file)
+    
+
 if __name__ == '__main__': 
     main(sys.argv[1:])

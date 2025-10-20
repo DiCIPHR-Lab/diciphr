@@ -1,11 +1,10 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrException, DiciphrArgumentParser
-from diciphr.nifti_utils import read_nifti, read_dwi
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.nifti_utils import read_nifti, read_dwi, mask_nifti 
 from diciphr.diffusion import ( estimate_tensor, estimate_tensor_restore, TensorScalarCalculator,                 
-                extract_shells_from_multishell_dwi, round_bvals, extract_b0, bet2_mask_nifti )
-import nibabel as nib
+                extract_shells_from_multishell_dwi, round_bvals, extract_b0 )
 
 DESCRIPTION = '''
     Estimate a tensor and calculate FA, Trace from a diffusion weighted volume
@@ -51,9 +50,9 @@ def buildArgsParser():
                     type=int, required=False, default=0, 
                     help='N paramter for RESTORE algorithm. Use 1 for SENSE (Philips), number of coils for GRAPPA (GE, Siemens), or 0 for Gaussian (default).'
                     )
-    p.add_argument('--erode', action='store_true', dest='erode', 
-                    required=False, default=False, 
-                    help='Erode the brain mask one time.' 
+    p.add_argument('--mask-method', action='store', dest='mask_method',
+                    type=str, required=False, default='synthstrip', 
+                    help='Method used for masking the B0 image. Options are synthstrip(default), bet.'
                     )
     return p
     
@@ -72,13 +71,16 @@ def main(argv):
             check_inputs(args.bval_file)
         if args.bvec_file:
             check_inputs(args.bvec_file)
-        run_dti_estimate(args.dwi_file, args.output_base, mask_file=args.mask_file, bval_file=args.bval_file, bvec_file=args.bvec_file, extract_shell=args.extract_shell, fit_method=args.fit_method, restore=args.restore, restore_N=args.N, erode=args.erode)
+        run_dti_estimate(args.dwi_file, args.output_base, mask_file=args.mask_file, 
+                         bval_file=args.bval_file, bvec_file=args.bvec_file, 
+                         extract_shell=args.extract_shell, fit_method=args.fit_method, 
+                         restore=args.restore, restore_N=args.N, mask_method=args.mask_method)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
 def run_dti_estimate(dwi_file, output_base, mask_file=None, bval_file=None, bvec_file=None, 
-                extract_shell=None, fit_method='WLS', restore=False, restore_N=0, erode=False):
+                extract_shell=None, fit_method='WLS', restore=False, restore_N=0, mask_method='synthstrip'):
     ''' 
     Run the pipeline.    
     '''
@@ -90,6 +92,13 @@ def run_dti_estimate(dwi_file, output_base, mask_file=None, bval_file=None, bvec
         logging.info('bval_file: {}'.format(bval_file))
     if bvec_file:
         logging.info('bvec_file: {}'.format(bvec_file))
+    mask_method = mask_method.lower()
+    if mask_method == 'bet':
+        mask_kwargs = {'erode_iterations':1, 'f':0.2, 'g':0.0}
+    elif mask_method == 'synthstrip':
+        mask_kwargs = {'border':0, 'fill':0, 'no_csf':False}
+    else:
+        raise ValueError(f'Mask method not recognized: {mask_method}')
     
     logging.info('Begin {}'.format(PROTOCOL_NAME))    
     # Load dwi_file
@@ -106,11 +115,7 @@ def run_dti_estimate(dwi_file, output_base, mask_file=None, bval_file=None, bvec
     else:
         logging.info('Mask B0')
         b0_im = extract_b0(dwi_im, bvals)
-        if erode:
-            erode_iterations = 1
-        else:
-            erode_iterations = 0
-        mask_im = bet2_mask_nifti(b0_im, erode_iterations=erode_iterations)
+        mask_im = mask_nifti(b0_im, method=mask_method, return_brain=False, **mask_kwargs)
     if restore:
         logging.info('Estimate tensor with RESTORE algorithm')
         tensor_im = estimate_tensor_restore(dwi_im, mask_im, bvals, bvecs, N=restore_N)

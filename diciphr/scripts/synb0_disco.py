@@ -14,49 +14,49 @@ PROTOCOL_NAME='SynB0-Disco'
     
 def buildArgsParser():
     p = DiciphrArgumentParser(description=DESCRIPTION)
-    p.add_argument('-d','--dwi', action='store',metavar='dwi_file',dest='dwi_file',
+    p.add_argument('-d','--dwi', action='store', metavar='dwi_file', dest='dwi_file',
                     type=str, required=True, 
                     help='The DWI filename in Nifti format.'
                     )
-    p.add_argument('-t','--t1', action='store',metavar='t1_file',dest='t1_file',
+    p.add_argument('-t','--t1', action='store', metavar='t1_file', dest='t1_file',
                     type=str, required=True, 
                     help='The T1 filename in Nifti format.'
                     )
-    p.add_argument('-S','--sif', action='store',metavar='sif',dest='sif',
-                    type=str, required=True, 
-                    help='The SIF format image of the Synb0-Disco pipeline container'
-                    )
-    p.add_argument('-L','--license', action='store',metavar='license',dest='fslicense',
-                    type=str, required=True, 
-                    help='The Freesurfer license text file'
-                    )
-    p.add_argument('-o','--output', action='store',metavar='output_base',dest='output_base',
+    p.add_argument('-o','--output', action='store', metavar='output_base', dest='output_base',
                     type=str, required=True, 
                     help='Output basename of undistorted synthetic B0 image and topup results.'
                     )
-    p.add_argument('-m','--mask', action='store',metavar='mask_file',dest='mask_file',
+    p.add_argument('-m','--mask', action='store', metavar='mask_file', dest='mask_file',
                     type=str, required=False, default=None, 
                     help='The T1 mask image, if provided will skip Synb0-Disco pipeline skull stripping'
                     )
-    p.add_argument('-b','--bvals', action='store',metavar='bval_file',dest='bval_file',
+    p.add_argument('-b','--bvals', action='store', metavar='bval_file', dest='bval_file',
                     type=str, required=False, default=None,
                     help='The bvals file, if not given will strip Nifti extension off the DWI image to ascertain filename.'
                     )
-    p.add_argument('-r','--bvecs', action='store',metavar='bvec_file',dest='bvec_file',
+    p.add_argument('-r','--bvecs', action='store', metavar='bvec_file', dest='bvec_file',
                     type=str, required=False, default=None,
                     help='The bvecs file, if not given will strip Nifti extension off the DWI image to ascertain filename.'
                     )
-    p.add_argument('-T','--readout-time', action='store',metavar='float',dest='readout_time',
+    p.add_argument('-T','--readout-time', action='store', metavar='float', dest='readout_time',
                     type=float, required=False, default=0.062, 
-                    help='The readout time'
+                    help='The readout time. Default: 0.062'
                     )        
-    p.add_argument('-p','--phaseenc', action='store',metavar='pe_dir',dest='phase_enc',
+    p.add_argument('-p','--phaseenc', action='store', metavar='pe_dir', dest='phase_enc',
                     type=str, required=False, default="AP",
                     help='The phase enconding direction. Either LR, RL, AP, PA, IS, SI'
                     )
-    p.add_argument('-s','--smooth', action='store',metavar='<float>',dest='smooth_fwhm',
+    p.add_argument('-s','--smooth', action='store', metavar='<float>', dest='smooth_fwhm',
                     type=float, required=False, default=1.15,
                     help='Smooth the distorted B0 data before running topup. Set to 0 to disable smoothing. Default is 1.15.'
+                    )
+    p.add_argument('-S','--sif', action='store', metavar='sif', dest='sif',
+                    type=str, required=False, default=None, 
+                    help='The SIF format image of the Synb0-Disco pipeline container'
+                    )
+    p.add_argument('-L','--license', action='store', metavar='license', dest='fslicense',
+                    type=str, required=False, default=None, 
+                    help='The Freesurfer license text file'
                     )
     p.add_argument('--topup', action='store_true', dest='topup', 
                     required=False, default=False, 
@@ -88,13 +88,11 @@ def main(argv):
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
-def run_synb0_disco_and_topup(dwi_file, t1_file, output_base, sif, fslicense, 
+def run_synb0_disco_and_topup(dwi_file, t1_file, output_base, sif=None, fslicense=None, 
             mask_file=None, bval_file=None, bvec_file=None, phase_enc='AP', readout_time=0.062,
             smooth_fwhm=1.15, topup=False):
     logging.info(f'DWI file: {dwi_file}')
     logging.info(f'T1 file: {t1_file}')
-    logging.info(f'SIF file: {sif}')
-    logging.info(f'Freesurfer license: {fslicense}')
     logging.info(f'Output base: {output_base}')
     if mask_file:
         logging.info(f'mask_file: {mask_file}')
@@ -120,12 +118,10 @@ def run_synb0_disco_and_topup(dwi_file, t1_file, output_base, sif, fslicense,
     bvals = round_bvals(bvals)
     logging.info('Run SynB0-Disco pipeline')
     synb0_output_file = f'{output_base}_synb0.nii.gz'
-    if not os.path.exists(synb0_output_file):
-        synb0_img = synb0_disco(sif, fslicense, dwi_img, bvals, acqparams_line, t1_img, t1_mask_img=t1_mask_img, topup=topup)
-        logging.info('Write resulting undistorted B0 image')
-        write_nifti(synb0_output_file, synb0_img)
-    else:
-        synb0_img = read_nifti(synb0_output_file)
+    synb0_img = synb0_disco(dwi_img, bvals, acqparams_line, t1_img, t1_mask=t1_mask_img,
+                            topup=topup, synb0_sif=sif, fslicense=fslicense)
+    logging.info('Write resulting undistorted B0 image')
+    write_nifti(synb0_output_file, synb0_img)
     logging.info('Run topup with SynB0-Disco configuration file')
     run_topup_post_synb0(dwi_img, bvals, bvecs, synb0_img, acqparams_line, 
                 output_base, smooth_fwhm=smooth_fwhm)

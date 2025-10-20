@@ -3,14 +3,17 @@
 import os, sys, logging, time
 from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
                DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi, 
-               json_files_from_niftis, resample_image, is_nifti_file, split_image )
+from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi,
+               mask_nifti, json_files_from_niftis, 
+               resample_image, is_nifti_file, split_image )
 from diciphr.diffusion import ( concatenate_dwis, round_bvals, extract_b0, 
                extract_shells_from_multishell_dwi, extract_gaussian_shells, 
-               mppca_denoise, gibbs_unringing, n4_bias_correct_dwi, bet2_mask_nifti, 
+               mppca_denoise, gibbs_unringing, n4_bias_correct_dwi, 
                prepare_acqparams_json, prepare_acqparams_nojson, 
-               run_topup, apply_topup, fsl_eddy, fsl_eddy_post_topup, save_eddy_text, 
+               phase_enc_from_json, synb0_disco, run_topup_post_synb0, run_topup, 
+               apply_topup, fsl_eddy, fsl_eddy_post_topup, save_eddy_text, 
                estimate_tensor, TensorScalarCalculator )
+from diciphr.registration import ants_registration_dti_t1
 
 DESCRIPTION = '''
     Performs preprocessing on one or more DWI images.
@@ -41,7 +44,18 @@ def buildArgsParser():
                     type=str, required=False, default=None, 
                     help='Provide a brain mask nifti file instead of other method(s)'
                     ) 
-    g_oio.add_argument('-t', '--topup', action='store', metavar='<topup>', dest='topup',
+    g_oio.add_argument('-t', '--t1', action='store', metavar='<t1>', dest='t1', 
+                    type=str, required=False, default=None, 
+                    help='Provide a T1 image to register to DTI space and/or run SynB0-Disco'
+                    )
+    g_oio.add_argument('--t1-mask', action='store', metavar='<mask>', dest='t1_mask', 
+                    type=str, required=False, default=None, 
+                    help='Provide a mask for T1 image to register to DTI space and/or run SynB0-Disco'
+                    )    
+    g_oio.add_argument('--synb0', action='store_true', dest='run_synb0', 
+                    help='Run SynB0-Disco with the T1'
+                    ) 
+    g_oio.add_argument('--topup', action='store', metavar='<topup>', dest='topup',
                     type=str, required=False,
                     help='The common prefix of results after running topup elsewhere.'
                     )
@@ -72,6 +86,9 @@ def buildArgsParser():
                     ) 
     g_e.add_argument('--replace-outliers', action='store_true', dest='replace_outliers',
                     help='Use eddy method to replace outlier slices in the data.'
+                    )
+    g_e.add_argument('--no-json', action='store_true', dest='no_json', 
+                    help='Do not attempt to extract total readout time and phase encoding direction from json files'
                     )
     g_e.add_argument('-T', '--readout-time', action='store', metavar='<float>', dest='readout_time',
                     type=float, required=False, default=0.062,
@@ -104,6 +121,10 @@ def buildArgsParser():
                     )  
     
     g_o = p.add_argument_group('Miscellaneous options')
+    g_o.add_argument('--mask-method', action='store', dest='mask_method',
+                    type=str, required=False, default='synthstrip', 
+                    help='Method used for masking the B0 image. Options are synthstrip(default), bet.'
+                    )
     g_o.add_argument('-r', '--resample', action='store', metavar='<float>', dest='resample',
                     type=float, required=False, default=0, 
                     help='Resample DWI to an isotropic resolution. Default is 0, for no resampling.'
@@ -159,15 +180,14 @@ def main(argv):
                 else:
                     check_inputs(args.topup+'_acqparams.txt')
                 logging.info('Outputs of a previous run of FSL topup found')
-        run_dti_preprocess(args.subject, args.output_dir, args.dwi_filenames, mask=args.mask, 
-                        topup=args.topup, config=args.config, index=args.index, acqparams=args.acqparams,
-                        extract_shell=args.extract_shell, normalize=args.normalize, 
-                        no_moco=args.no_moco, denoise=args.denoise, gibbs=args.gibbs,
-                        acquisition_slicetype=args.acquisition_slicetype,
-                        bias_corr=args.bias_corr, bias_mask=args.bias_mask,
-                        bias_iterations=args.bias_iterations, bias_threshold=args.bias_threshold, 
-                        resample=args.resample, phase_encs=args.phase_encs, readout_time=args.readout_time, 
-                        replace_outliers=args.replace_outliers)
+        run_dti_preprocess(args.subject, args.output_dir, args.dwi_filenames, mask=args.mask, t1=args.t1, 
+                        t1_mask=args.t1_mask, run_synb0=args.run_synb0, topup=args.topup, config=args.config, 
+                        index=args.index, acqparams=args.acqparams, extract_shell=args.extract_shell, 
+                        normalize=args.normalize, no_json=args.no_json, no_moco=args.no_moco, denoise=args.denoise, 
+                        gibbs=args.gibbs, acquisition_slicetype=args.acquisition_slicetype, bias_corr=args.bias_corr, 
+                        bias_mask=args.bias_mask, bias_iterations=args.bias_iterations, 
+                        bias_threshold=args.bias_threshold, resample=args.resample, phase_encs=args.phase_encs, 
+                        readout_time=args.readout_time, replace_outliers=args.replace_outliers)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
@@ -194,33 +214,54 @@ def dwi_filenames_from_directory(directory):
                 break 
             raise DiciphrException('Nifti file corresponding to bval file does not exist')
     return nifti_files
-  
-def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bval_filenames=[], bvec_filenames=[], 
-               mask=None, topup=None, config=None, acqparams=None, index=None, extract_shell=None, normalize=False, 
-               no_moco=False, denoise=False, gibbs=False, acquisition_slicetype='axial', 
-               replace_outliers=False, phase_encs=[], readout_time=0.062, 
-               bias_corr=True, bias_mask=None, bias_iterations=[50,50,50,50], bias_threshold=0.001, 
-               resample=0, bet_f=0.2, bet_g=0.0):
+
+def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], 
+           bval_filenames=[], bvec_filenames=[], mask=None, t1=None, t1_mask=None, 
+           run_synb0=False, topup=None, config=None, acqparams=None, index=None, 
+           extract_shell=None, normalize=False, no_moco=False, no_json=False, 
+           denoise=False, gibbs=False, acquisition_slicetype='axial', 
+           replace_outliers=False, phase_encs=[], readout_time=0.062, 
+           bias_corr=True, bias_mask=None, mask_method='synthstrip', 
+           bias_iterations=[50,50,50,50], bias_threshold=0.001, resample=0):
+    
     # log some info
-    logging.info('subject: {}'.format(subject))
-    logging.info('dwi_filenames: {}'.format(dwi_filenames))
-    logging.info('output_dir: {}'.format(output_dir))
+    logging.info(f'subject: {subject}')
+    logging.info(f'dwi_filenames: {dwi_filenames}')
+    logging.info(f'output_dir: {output_dir}')
     if resample > 0: 
-        logging.info('resample: {}'.format(resample))
+        logging.info(f'resample: {resample}')
     else:
         logging.info('Not resampling data.')
     if mask:
-        logging.info('Mask: {}'.format(mask))
+        logging.info(f'Mask: {mask}')
+    if t1:
+        logging.info(f'T1: {t1}')
+        t1_im = read_nifti(t1)
+    if t1_mask:
+        logging.info(f'T1 mask: {t1_mask}')
+        t1_mask_im = read_nifti(t1_mask)
+    else:
+        t1_mask_im = None
     if topup:
-        logging.info('Topup: {}'.format(topup))
+        logging.info(f'Topup: {topup}')
     if extract_shell:
         if 0 not in extract_shell:
             extract_shell = [0]+extract_shell
-        logging.info('Extract shell: {}'.format(extract_shell))    
+        logging.info(f'Extract shell: {extract_shell}')    
     if no_moco: 
         logging.info('Skipping motion correction step.')
     if not denoise:
         logging.info('Skipping denoising step.')
+    
+    mask_method = mask_method.lower()
+    if mask_method == 'bet':
+        mask_kwargs = {'erode_iterations':1, 'f':0.2, 'g':0.0}
+        bias_mask_kwargs = {'erode_iterations':0, 'f':0.2, 'g':0.0} 
+    elif mask_method == 'synthstrip':
+        mask_kwargs = {'border':0, 'fill':0, 'no_csf':False}
+        bias_mask_kwargs = {'border':2, 'fill':0, 'no_csf':False}
+    else:
+        raise ValueError(f'Mask method not recognized: {mask_method}')
     
     # Output filenames
     dwi_processed_filename = os.path.join(output_dir, f"{subject}_DWI_preprocessed.nii.gz")
@@ -235,6 +276,8 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
     eddy_text_prefix = os.path.join(output_dir, f"{subject}")   
     bias_filename = os.path.join(output_dir, f"{subject}_bias_field.nii.gz")
     topup_base = os.path.join(output_dir, f"{subject}_topup")
+    registration_prefix = os.path.join(output_dir, f"{subject}")
+    synb0_output_file = os.path.join(output_dir, f"{subject}_synb0.nii.gz")
     
     logging.info('Begin Protocol')
     
@@ -256,10 +299,16 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
         bias_mask_im = read_nifti(bias_mask)
     
     # 2. Get acquisition parameters from json files or from command line 
-    json_files = json_files_from_niftis(dwi_filenames)
+    if no_json:
+        json_files = None
+    else:
+        json_files = json_files_from_niftis(dwi_filenames)
     if json_files:
         logging.info("Get acquisition parameters from .json files")
         all_acqparams = [prepare_acqparams_json(fn, dwi_im) for fn, dwi_im in zip(json_files, dwi_ims)]
+        logging.debug(f'all_acqparams: {all_acqparams}')
+        phase_encs = [phase_enc_from_json(fn) for fn in json_files]
+        logging.debug(f'phase_encs: {phase_encs}')
     else:
         logging.info("Get acquisition parameters without .json files")
         if len(phase_encs) != len(dwi_filenames):
@@ -270,7 +319,8 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
         if len(phase_encs) > 0:
             logging.info("Get acquisition parameters without .json files")
         all_acqparams = [prepare_acqparams_nojson(readout_time, phase_enc) for phase_enc in phase_encs]
-
+        logging.debug(f'all_acqparams: {all_acqparams}')
+        
     # Array of which DWI images to keep in output 
     keep_dwis = [len(bval[bval>0])>=6 and len(bval[bval==0])>=1 for bval in bval_arrays]
     for fn, k in zip(dwi_filenames, keep_dwis):
@@ -304,6 +354,16 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
         # When there is only one group of phase encoding directions, but multiple DWI images, concatenate them BEFORE denoising
         dwi_ims, bval_arrays, bvec_arrays = [[x] for x in concatenate_dwis(*zip(dwi_ims, bval_arrays, bvec_arrays))]
         keep_dwis = [True]
+        
+        if run_synb0:
+            logging.info("Run SynB0-Disco")
+            synb0_img = synb0_disco(dwi_ims[0], bval_arrays[0], all_acqparams[0], t1_im, t1_mask=t1_mask_im)
+            write_nifti(synb0_output_file, synb0_img)
+   
+            logging.info('Run topup with SynB0-Disco configuration file')
+            run_topup_post_synb0(dwi_ims[0], bval_arrays[0], bvec_arrays[0], synb0_img, all_acqparams[0], 
+                topup_base)
+            topup = topup_base
         
     # 4. Denoising
     if denoise:
@@ -348,7 +408,7 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
     elif topup:
         start_time = time.time()
         if mask is None:
-            mask_im = bet2_mask_nifti(unwarped_b0_im, erode_iterations=0, f=bet_f, g=bet_g)
+            mask_im = mask_nifti(unwarped_b0_im, method=mask_method, **mask_kwargs)
         # Run eddy 
         logging.info("Run Eddy")
         dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy_post_topup(
@@ -361,7 +421,8 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
         start_time = time.time()
         if mask is None:
             b0_im = extract_b0(dwi_proc_im, bvals, first=True)
-            mask_im = bet2_mask_nifti(b0_im, erode_iterations=0, f=bet_f, g=bet_g)
+            # use slightly bigger mask (bias_mask_kwargs) for eddy without topup 
+            mask_im = mask_nifti(b0_im, method=mask_method, **bias_mask_kwargs)
         logging.info("Run FSL eddy to correct for eddy and subject motion")
         dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy(
                     dwi_proc_im, bvals, bvecs, 
@@ -389,9 +450,9 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
     if bias_corr: 
         if bias_mask is None:
             if mask is None:
-                logging.info("Mask B0 with BET2 f={f} g={g} before bias field correction".format(f=bet_f, g=bet_g))
+                logging.info(f"Mask B0 with {mask_method} before bias field correction")
                 b0_im = extract_b0(dwi_proc_im, bvals, first=True)
-                mask_im = bet2_mask_nifti(b0_im, erode_iterations=0, f=bet_f, g=bet_g)
+                mask_im = mask_nifti(b0_im, method=mask_method, **bias_mask_kwargs)
             logging.info('Bias correct within brain mask with N4BiasFieldCorrection')
             dwi_n4, bias_im = n4_bias_correct_dwi(dwi_proc_im, bvals, bvecs, field=True, mask_img=mask_im)
             dwi_proc_im, __, __ = dwi_n4 
@@ -402,19 +463,19 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
         write_nifti(bias_filename, bias_im)
     
     # 10. Mask B0 and erode mask
+    b0_im = extract_b0(dwi_proc_im, bvals, first=no_moco, average=(not no_moco))        
     if mask is None:
-        logging.info("Mask B0 with BET2 f={f} g={g}".format(f=bet_f, g=bet_g))
-        b0_im = extract_b0(dwi_proc_im, bvals, first=no_moco, average=not no_moco)
-        mask_im = bet2_mask_nifti(b0_im, erode_iterations=1, f=bet_f, g=bet_g)
+        logging.info(f"Mask B0 with {mask_method}")
+        mask_im = mask_nifti(b0_im, method=mask_method, **mask_kwargs)
+        logging.info('Write mask Nifti to file {}'.format(mask_filename))
+        write_nifti(mask_filename, mask_im)
+        # temp - testing - delete this line 
+        write_nifti(os.path.join(output_dir, f"{subject}_BET_mask.nii.gz"), mask_nifti(b0_im, method='bet'))
 
-    logging.info('Write mask Nifti to file {}'.format(mask_filename))
-    write_nifti(mask_filename, mask_im)
-        
     # 11. Save DWI and extract final B0. 
     logging.info("Save processed DWI")    
     write_dwi(dwi_processed_filename, dwi_proc_im, bvals, bvecs)
     logging.info('Extract preprocessed B0 image')
-    b0_im = extract_b0(dwi_proc_im, bvals)
     write_nifti(b0_filename, b0_im)
     
     # 12. Estimate tensor
@@ -432,5 +493,16 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], bv
     write_nifti(ax_filename, TSC.AX)
     write_nifti(rad_filename, TSC.RAD)
     
+    # 14. Registration 
+    if t1:
+        if t1_mask_im is None:
+            logging.info("Skull strip the T1 before registration")
+            t1_im, t1_mask_im = mask_nifti(t1_im, method=mask_method, return_brain=True)
+        logging.info("Register DTI to T1")
+        ants_registration_dti_t1(registration_prefix, 
+                 b0_im, t1_im, fa_img=TSC.FA, 
+                 dti_mask_img=mask_im, syn=(topup is None), 
+                 phase_enc=phase_encs[0])
+        
 if __name__ == '__main__': 
     main(sys.argv[1:])

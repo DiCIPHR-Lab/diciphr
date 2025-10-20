@@ -1,12 +1,10 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-                        DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import read_nifti, read_dwi, write_dwi 
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.nifti_utils import read_nifti, read_dwi, write_dwi, mask_nifti
 from diciphr.diffusion import ( n4_bias_correct_dwi, 
-                round_bvals, extract_b0, bet2_mask_nifti )
-import nibabel as nib
+                round_bvals, extract_b0 )
 
 DESCRIPTION = '''
     Bias Correct a DWI image 
@@ -44,6 +42,10 @@ def buildArgsParser():
                     type=float, required=False, default=0.001,
                     help='Bias threshold. Default 0.001.'
                     )
+    p.add_argument('--mask-method', action='store', dest='mask_method',
+                    type=str, required=False, default='synthstrip', 
+                    help='Method used for masking the B0 image. Options are synthstrip(default), bet.'
+                    )
     return p
     
 def main(argv):
@@ -62,14 +64,14 @@ def main(argv):
         if args.bvec_file:
             check_inputs(args.bvec_file)
         run_dwi_bias_correct(args.dwi_file, args.output, mask_file=args.mask_file, 
-                bval_file=args.bval_file, bvec_file=args.bvec_file, 
+                bval_file=args.bval_file, bvec_file=args.bvec_file, mask_method=args.mask_method, 
                 bias_iterations=args.bias_iterations, bias_threshold=args.bias_threshold)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
 def run_dwi_bias_correct(dwi_file, output, mask_file=None, bval_file=None, bvec_file=None, 
-                bias_iterations=[50,50,50,50], bias_threshold=0.001):
+                mask_method='synthstrip', bias_iterations=[50,50,50,50], bias_threshold=0.001):
     ''' 
     Run the pipeline.    
     '''
@@ -77,6 +79,14 @@ def run_dwi_bias_correct(dwi_file, output, mask_file=None, bval_file=None, bvec_
     logging.info('output: {}'.format(output))
     if mask_file:
         logging.info('mask_file: {}'.format(mask_file))
+    else:
+        mask_method = mask_method.lower()
+        if mask_method == 'bet':
+            mask_kwargs = {'erode_iterations':0, 'f':0.2, 'g':0.0} 
+        elif mask_method == 'synthstrip':
+            mask_kwargs = {'border':2, 'fill':0, 'no_csf':False}
+        else:
+            raise ValueError(f'Mask method not recognized: {mask_method}')   
     if bval_file:
         logging.info('bval_file: {}'.format(bval_file))
     if bvec_file:
@@ -94,7 +104,7 @@ def run_dwi_bias_correct(dwi_file, output, mask_file=None, bval_file=None, bvec_
     else:
         logging.info('Mask B0')
         b0_im = extract_b0(dwi_im, bvals)
-        mask_im = bet2_mask_nifti(b0_im)
+        mask_im = mask_nifti(b0_im, method=mask_method, return_brain=False, **mask_kwargs)
         
     dwi_bias_im, bias_im = n4_bias_correct_dwi(dwi_im, bvals, bvecs, mask_im, 
         iterations=bias_iterations, threshold=bias_threshold, return_field=True)

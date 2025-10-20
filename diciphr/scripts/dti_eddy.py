@@ -2,11 +2,11 @@
 
 import os, sys, logging, time
 from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
-from diciphr.nifti_utils import read_nifti, read_dwi, json_files_from_niftis, split_image
+from diciphr.nifti_utils import ( read_nifti, read_dwi, json_files_from_niftis, 
+                                 split_image, mask_nifti )
 from diciphr.diffusion import ( concatenate_dwis, round_bvals, extract_b0, 
-               bet2_mask_nifti, most_gradients_pe, apply_topup, 
-               prepare_acqparams_json, prepare_acqparams_nojson, 
-               fsl_eddy, fsl_eddy_post_topup, save_eddy_text )
+               prepare_acqparams_json, prepare_acqparams_nojson, most_gradients_pe, 
+               apply_topup, fsl_eddy, fsl_eddy_post_topup, save_eddy_text )
 
 DESCRIPTION = '''
     Performs eddy on one or more DWI images.
@@ -32,6 +32,10 @@ def buildArgsParser():
     p.add_argument('-m', '--mask', action='store', metavar='<mask>', dest='mask', 
                     type=str, required=False, default=None, 
                     help='Provide a brain mask nifti file instead of other method(s)'
+                    ) 
+    p.add_argument('--mask-method', action='store', metavar='<str>', dest='mask_method', 
+                    type=str, required=False, default='synthstrip', 
+                    help='Method to estimate brain mask. Options: synthstrip (default), bet'
                     ) 
     p.add_argument('-t', '--topup', action='store', metavar='<topup>', dest='topup',
                     type=str, required=False,
@@ -94,15 +98,15 @@ def main(argv):
                     check_inputs(args.topup+'_acqparams.txt')
                 logging.info('Outputs of a previous run of FSL topup found')
         run_dti_eddy(args.subject, args.output_dir, args.dwi_filenames, mask=args.mask, 
-                        topup=args.topup, index=args.index, acqparams=args.acqparams,
+                        mask_method=args.mask_method, topup=args.topup, index=args.index, acqparams=args.acqparams,
                         readout_time=args.readout_time, phase_encs=args.phase_encs, 
                         keep_all_pes=args.keep_all_pes, replace_outliers=args.replace_outliers)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
 
-def run_dti_eddy(subject, output_dir, dwi_filenames, mask=None, topup=None, 
-                 index=None, acqparams=None, readout_time=0.062, phase_encs=[], 
+def run_dti_eddy(subject, output_dir, dwi_filenames, mask=None, mask_method='synthstrip', 
+                 topup=None, index=None, acqparams=None, readout_time=0.062, phase_encs=[], 
                  keep_all_pes=False, replace_outliers=False):
     # log some info
     logging.info('subject: {}'.format(subject))
@@ -131,7 +135,15 @@ def run_dti_eddy(subject, output_dir, dwi_filenames, mask=None, topup=None,
     if mask:
         logging.info('Load user provided mask')
         mask_im = read_nifti(mask)
-    
+    else:
+        mask_method = mask_method.lower()
+        if mask_method == 'bet':
+            mask_kwargs = {'erode_iterations':0, 'f':0.2, 'g':0.0}
+        elif mask_method == 'synthstrip':
+            mask_kwargs = {'border':1, 'fill':0, 'no_csf':False}
+        else:
+            raise ValueError(f'Mask method not recognized: {mask_method}')
+            
     # 2. Get acquisition parameters from json files or from command line 
     json_files = json_files_from_niftis(dwi_filenames)
     if json_files:
@@ -186,7 +198,7 @@ def run_dti_eddy(subject, output_dir, dwi_filenames, mask=None, topup=None,
     if topup:
         start_time = time.time()
         if mask is None:
-            mask_im = bet2_mask_nifti(unwarped_b0_im, erode_iterations=0, f=0.2, g=0.0)
+            mask_im = mask_nifti(unwarped_b0_im, method=mask_method, return_brain=False, **mask_kwargs)
         # Run eddy 
         logging.info("Run Eddy")
         dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy_post_topup(
@@ -199,7 +211,7 @@ def run_dti_eddy(subject, output_dir, dwi_filenames, mask=None, topup=None,
         start_time = time.time()
         if mask is None:
             b0_im = extract_b0(dwi_proc_im, bvals, first=True)
-            mask_im = bet2_mask_nifti(b0_im, erode_iterations=0, f=0.2, g=0.0)
+            mask_im = mask_nifti(b0_im, method=mask_method, return_brain=False, **mask_kwargs)
         logging.info("Run FSL eddy to correct for eddy and subject motion")
         dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy(
                     dwi_proc_im, bvals, bvecs, 
