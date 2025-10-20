@@ -11,11 +11,10 @@ from dipy.denoise.pca_noise_estimate import pca_noise_estimate
 from dipy.denoise.gibbs import gibbs_removal
 from diciphr.utils import ( make_dir, force_to_list, read_json_file, 
                 TempDirManager, ExecCommand, ExecFSLCommand, DiciphrException )
-from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, 
+from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, write_dwi,
                 erode_image, check_affines_and_shapes_match, is_valid_dwi, 
-                read_dwi, write_dwi, bet2_mask_nifti, mask_image, 
-                threshold_image, crop_pad_image, resample_image, 
-                smooth_image, split_image, concatenate_niftis )
+                mask_nifti, apply_mask_to_image, threshold_image, split_image, 
+                crop_pad_image, resample_image, smooth_image, concatenate_niftis )
 
 ##############################################
 ####### Bvals/bvecs, DWI manipulation ########
@@ -344,7 +343,7 @@ def mask_dwi(dwi_im, mask_im):
     dwi_masked_im = nifti_image(dwi_masked_data.astype(dwi_im.get_data_dtype()), dwi_im.affine, dwi_im.header)
     return dwi_masked_im
 
-def normalize_dwi(dwi_im, bvals, bvecs, reference_value=1000.0, wm_im=None, mask_im=None):
+def normalize_dwi(dwi_im, bvals, bvecs, reference_value=1000.0, wm_im=None, mask_im=None, mask_method='synthstrip'):
     '''Normalize a DWI by adjusting the median B0 signal in WM to a reference value. 
     
     Parameters
@@ -375,7 +374,7 @@ def normalize_dwi(dwi_im, bvals, bvecs, reference_value=1000.0, wm_im=None, mask
         fa_wm_threshold = 0.30
         # threshold FA to get WM mask 
         if mask_im is None:
-            mask_im = bet2_mask_nifti(b0_im, erode_iterations=1)
+            mask_im = mask_nifti(b0_im, method=mask_method)
         tensor_im, fa_im = estimate_tensor(dwi_im, mask_im, bvals, bvecs, return_fa=True)
         wm_mask = fa_im.get_fdata() > fa_wm_threshold
     else:
@@ -812,13 +811,29 @@ def decode_phaseenc(x):
     }
     return mapping.get(x.strip().upper(),x) # return original if not found 
 
+def phase_enc_from_json(json_file):
+    jdata = read_json_file(json_file)
+    # get relevant fields 
+    phaseenc = jdata.get('PhaseEncodingDirection', jdata.get('PhaseEncodingAxis', jdata.get('InPlanePhaseEncodingDirection')))
+    mapping = {
+        'j-': 'AP',
+        'j' : 'PA',
+        'i' : 'LR',
+        'i-': 'RL',
+        'k' : 'IS',
+        'k-': 'SI'
+    }
+    return mapping.get(phaseenc, phaseenc)
+
 def group_diffusion_niftis_json(nifti_files, json_files, bval_files=[None], bvec_files=[None]):
     grouped = {}
     for nifti, js, bval, bvec in zip(nifti_files, json_files, bval_files, bvec_files):
         jdata = read_json_file(js)
-        ped = jdata.get('PhaseEncodingDirection')
+        ped = jdata.get('PhaseEncodingDirection', jdata.get('PhaseEncodingAxis', jdata.get('InPlanePhaseEncodingDirection')))
         trt = jdata.get('TotalReadoutTime')
-        key = (ped, trt)
+        eechosp = jdata.get('EffectiveEchoSpacing', jdata.get('EstimatedEffectiveEchoSpacing', jdata.get('EchoSpacing')))
+        pe_steps = jdata.get('PhaseEncodingSteps')
+        key = (ped, trt, eechosp, pe_steps)
         if key not in grouped.keys():
             grouped[key] = []
         grouped[key].append((nifti, js, bval, bvec))
@@ -828,9 +843,9 @@ def prepare_acqparams_json(json_file, nifti_img, mb_factor=None):
     # read json file 
     jdata = read_json_file(json_file)
     # get relevant fields 
-    phaseenc = jdata.get('PhaseEncodingDirection')
-    totalreadout = jdata.get('TotalReadoutTime')
-    eechosp = jdata.get('EffectiveEchoSpacing')
+    phaseenc = jdata.get('PhaseEncodingDirection', jdata.get('PhaseEncodingAxis', jdata.get('InPlanePhaseEncodingDirection')))
+    totalreadout = jdata.get('TotalReadoutTime', jdata.get('EstimatedTotalReadoutTime'))
+    eechosp = jdata.get('EffectiveEchoSpacing', jdata.get('EstimatedEffectiveEchoSpacing', jdata.get('EchoSpacing')))
     pe_steps = jdata.get('PhaseEncodingSteps')
     pixdim = nifti_img.shape[:3] 
     if phaseenc is None:
@@ -941,8 +956,12 @@ def pad_image_for_topup(nifti_img):
         ))
     return crop_pad_image(nifti_img, x_adjust, y_adjust, z_adjust), adjusted
     
-def synb0_disco(synb0_sif, fslicense, dwi_img, bvals, acqparams, t1_img, t1_mask_img=None, topup=False):
+def synb0_disco(dwi_img, bvals, acqparams, t1_img, t1_mask=None, topup=False, synb0_sif=None, fslicense=None):
     acqparams2 = list(acqparams[:3]) + [0.0]
+    if synb0_sif is None:
+        synb0_sif = os.environ['DICIPHR_SYNB0SIF']
+    if fslicense is None:
+        fslicense = os.environ['DICIPHR_FSLICENSE']
     with TempDirManager(prefix='synb0_disco') as manager:
         tmpdir = manager.path()
         input_tmp_datadir = make_dir(os.path.join(tmpdir, 'input'))
@@ -950,8 +969,8 @@ def synb0_disco(synb0_sif, fslicense, dwi_img, bvals, acqparams, t1_img, t1_mask
         # extract the first b0 volume 
         bzero_img = extract_b0(dwi_img, bvals, first=True)
         bzero_img.to_filename(os.path.join(input_tmp_datadir, "b0.nii.gz"))
-        if t1_mask_img is not None:
-            t1_img = mask_image(t1_img, t1_mask_img)
+        if t1_mask is not None:
+            t1_img = apply_mask_to_image(t1_img, t1_mask)
         t1_img.to_filename(os.path.join(input_tmp_datadir, "T1.nii.gz"))
         np.savetxt(os.path.join(input_tmp_datadir, "acqparams.txt"), 
                        np.asarray([acqparams, acqparams2]), 
@@ -963,11 +982,11 @@ def synb0_disco(synb0_sif, fslicense, dwi_img, bvals, acqparams, t1_img, t1_mask
             synb0_sif]
         if not topup: 
             cmd.extend(["--notopup"])
-        if t1_mask_img is not None:
+        if t1_mask is not None:
             cmd.append("--stripped")
         ExecCommand(cmd).run()
         result_img = read_nifti(os.path.join(output_tmp_datadir, "b0_u.nii.gz"))
-        result_img = mask_image(result_img, result_img) # set anything negative to zero 
+        result_img = apply_mask_to_image(result_img, result_img) # set anything negative to zero 
     return result_img 
 
 def run_topup(dwi_images, bval_arrays, bvec_arrays, acqparams_list, output_base, 

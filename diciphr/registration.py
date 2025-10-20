@@ -1,8 +1,8 @@
 #! /usr/bin/env python
 
 import os, logging, shutil
-from diciphr.utils import DiciphrException, ExecCommand, TempDirManager, which
-from diciphr.nifti_utils import ( write_nifti, resample_image, mask_image, threshold_image )
+from diciphr.utils import DiciphrException, ExecCommand, TempDirManager, force_to_list, which
+from diciphr.nifti_utils import ( write_nifti, resample_image, apply_mask_to_image, threshold_image )
 import numpy as np
     
 def ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=None, t1_mask_img=None, dti_mask_img=None,
@@ -34,11 +34,11 @@ def ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=None, t1_mask
             fa_img = resample_image(fa_img, master=b0_img)
     
     # Apply masks to data 
-    t1_masked_img = mask_image(t1_img, t1_mask_img)
-    b0_masked_img = mask_image(b0_img, dti_mask_img)
+    t1_masked_img = apply_mask_to_image(t1_img, t1_mask_img)
+    b0_masked_img = apply_mask_to_image(b0_img, dti_mask_img)
     fa_masked_img = None 
     if fa_img:
-        fa_masked_img = mask_image(fa_img, dti_mask_img)
+        fa_masked_img = apply_mask_to_image(fa_img, dti_mask_img)
     
     with TempDirManager(prefix='Registration_DTI-T1') as manager:
         tmpdir = manager.path()
@@ -96,7 +96,7 @@ def ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=None, t1_mask
             shutil.copyfile(dicowarp, f"{output_prefix}_0dicoWarp.nii.gz")
             shutil.copyfile(dicoinvwarp, f"{output_prefix}_0dicoInverseWarp.nii.gz")
         else:
-            ants_apply_transforms(t1ref_filename, t1rigid_filename, dtiref_filename, dtit1rigid, invert=[1])  
+            ants_apply_transforms(t1ref_filename, t1rigid_filename, dtiref_filename, [dtit1rigid], invert=[1])  
         shutil.copyfile(dtit1rigid, f"{output_prefix}_DTI-T1-0GenericAffine.mat")
         shutil.copyfile(t1rigid_filename, f"{output_prefix}_T1-DTI.nii.gz")
     
@@ -131,8 +131,8 @@ class AntsRegistration():
     
     def set_outputs(self, output_prefix, warped_outputs=2):
         # set up outputs 
-        warped = output_prefix+'Warped'
-        invwarped = output_prefix+'InverseWarped'
+        warped = output_prefix+'Warped.nii.gz'
+        invwarped = output_prefix+'InverseWarped.nii.gz'
         self.outputs = []
         if warped_outputs == 0:
             self.outputs.extend(['--output',output_prefix])
@@ -205,7 +205,8 @@ class AntsRegistration():
         # convergence_threshold - float
         # convergence_window - int
         transform, transform_params = self._validate_transform_params(transform, transform_params)
-        transform_cmd = ['--transform', transform+'[0]'.format(','.join(map(str,transform_params)))]
+        transform_params = ','.join(map(str,transform_params))
+        transform_cmd = ['--transform', f'{transform}[{transform_params}]']
         if restrict_deformation is not None:    
             transform_cmd.extend(['-g', str(restrict_deformation)])
         metric_cmd = []
@@ -312,6 +313,7 @@ def ants_apply_transforms(input_filename, output_filename, reference_filename, t
     -------
     None
     '''
+    transform_filenames = force_to_list(transform_filenames)
     if len(invert) == 0:
         invert = [ 0 for tf in transform_filenames ] 
     transform_string = ','.join( [tf if i==0 else '[{},1]'.format(tf) for tf, i in zip(transform_filenames, invert) ])

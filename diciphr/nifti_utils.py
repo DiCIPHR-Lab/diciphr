@@ -9,7 +9,7 @@ import os, logging
 import nibabel as nib
 import numpy as np
 from diciphr.utils import ( which, TempDirManager, is_nifti_file, force_to_list, 
-                ExecCommand, ExecFSLCommand, DiciphrException, logical_and )
+                ExecCommand, ExecFSLCommand, DiciphrException )
 
 ##############################################
 ########   NIFTI FILENAME FUNCTIONS  #########
@@ -852,7 +852,24 @@ def flirt_register(input_im, ref_im,
 def write_flirt_matrix_to_file(flirt_mat, filename):
     np.savetxt(filename, flirt_mat, fmt='%0.12f')
 
-def bet2_mask_nifti(nifti_im,  f=0.2, g=0.0, erode_iterations=0, return_brain=False):
+def mask_nifti(nifti_im, method='synthstrip', return_brain=False, **kwargs):
+    if method.lower() == 'synthstrip':
+        sif_file = kwargs.get('sif_file', None)
+        border = kwargs.get('border', 1)
+        fill = kwargs.get('fill', 0)
+        no_csf = kwargs.get('no_csf', False)
+        return synthstrip_mask_nifti(nifti_im, sif_file=sif_file, 
+                                        border=border, fill=fill, 
+                                        no_csf=no_csf, return_brain=return_brain)
+    elif method.lower() == 'bet':
+        f = kwargs.get('f', 0.2)
+        g = kwargs.get('g', 0.0)
+        erode_iterations = kwargs.get('erode_iterations', 0)
+        return bet2_mask_nifti(nifti_im, f=f, g=g, erode_iterations=erode_iterations, return_brain=return_brain)
+    else:
+        raise ValueError(f'Method argument not recognized: {method}')
+
+def bet2_mask_nifti(nifti_im, f=0.2, g=0.0, erode_iterations=0, return_brain=False):
     '''Mask a nifti image with bet2. Optionally erode the mask
     
     Parameters
@@ -890,7 +907,6 @@ def bet2_mask_nifti(nifti_im,  f=0.2, g=0.0, erode_iterations=0, return_brain=Fa
         tmp_filename = os.path.join(tmpdir,'input.nii.gz')
         mask_tmp_betprefix = os.path.join(tmpdir,'input')
         mask_tmp_fileprefix = os.path.join(tmpdir,'input_mask')
-        mask_ero_tmp_fileprefix = os.path.join(tmpdir,'input_mask_ero')
         nifti_im.to_filename(tmp_filename)
         cmd = ['bet2',tmp_filename,mask_tmp_betprefix,'-nm','-f',str(float(f)),'-g',str(float(g))]
         ExecFSLCommand(cmd).run()
@@ -908,6 +924,41 @@ def bet2_mask_nifti(nifti_im,  f=0.2, g=0.0, erode_iterations=0, return_brain=Fa
         return brain_im, mask_im
     else:
         return mask_im
+    
+def synthstrip_mask_nifti(nifti_im, sif_file=None, border=1, fill=0, no_csf=False, return_distance=False, return_brain=False):
+    if sif_file is None:
+        sif_file = os.environ.get('DICIPHR_SYNTHSTRIPSIF')
+        if not sif_file:
+            raise EnvironmentError('Container for synthstrip not found in environment. Set DICIPHR_SYNTHSTRIPSIF')
+    else:
+        if not os.path.exists(sif_file):
+            raise FileNotFoundError('Container for synthstrip not found')
+    with TempDirManager(prefix='bet2_mask_nifti') as manager:
+        tmpdir = manager.path()
+        tmp_filename = os.path.join(tmpdir, 'input.nii.gz')
+        tmp_maskfilename = os.path.join(tmpdir, 'mask.nii.gz')
+        tmp_distfilename = os.path.join(tmpdir, 'distance.nii.gz')
+        tmp_outfilename = os.path.join(tmpdir, 'output.nii.gz')
+        write_nifti(tmp_filename, nifti_im)
+        cmd = ['apptainer', 'exec', '-B', f'{tmpdir}:{tmpdir}', 
+               sif_file, 'mri_synthstrip', 
+               '-i', tmp_filename, '-o', tmp_outfilename, '-m', tmp_maskfilename, 
+               '-d', tmp_distfilename, '-b', str(border), '-f', str(fill)]
+        if no_csf:
+            cmd.append('--no-csf')
+        ExecCommand(cmd).run()
+        output_img = read_nifti(tmp_outfilename, lazy_load=False)
+        mask_img = read_nifti(tmp_maskfilename, lazy_load=False)
+        distance_img = read_nifti(tmp_distfilename, lazy_load=False)
+    if return_brain:
+        if return_distance:
+            return output_img, mask_img, distance_img
+        else:
+            return output_img, mask_img
+    elif return_distance:
+        return mask_img, distance_img
+    else:
+        return mask_img
 
 def fast_segmentation(nifti_im, type='t1'):
     '''Runs fast segmentation and returns csf, gm, and wm partial volume maps. 
@@ -1107,7 +1158,7 @@ def check_affines_and_shapes_match(*images, raise_exception=False):
         ret = False 
     return ret 
 
-def mask_image(img, mask_img, threshold_value=0):
+def apply_mask_to_image(img, mask_img, threshold_value=0):
     mask_data = mask_img.get_fdata() > threshold_value 
     data = img.get_fdata() * mask_data
     return nifti_image(data, img.affine, img.header)
