@@ -2,8 +2,7 @@
 
 import numpy as np
 import pandas as pd
-from diciphr.nifti_utils import read_nifti
-from diciphr.diffusion import bet2_mask_nifti
+from diciphr.nifti_utils import read_nifti, mask_nifti
 
 def mias(nifti_img, exception='raise'):
     # count volume (mm2) of non-zero voxels in Most Inferior Axial Slice (MIAS)
@@ -33,7 +32,7 @@ def fov_series(b0_filename, mask=True, exception='raise'):
     try:
         b0_img = read_nifti(b0_filename)
         if mask:
-            b0_img, mask_img = bet2_mask_nifti(b0_img, return_brain=True)
+            b0_img, mask_img = mask_nifti(b0_img, return_brain=True)
         mias_ = mias(b0_img)
         msas_ = msas(b0_img)
         row = pd.Series(name=b0_filename)
