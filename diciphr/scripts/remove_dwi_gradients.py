@@ -1,11 +1,9 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrException, DiciphrArgumentParser
-from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi, 
-                reorient_dwi, reorient_nifti, is_valid_dwi )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.nifti_utils import read_dwi, write_dwi, is_valid_dwi
 from diciphr.diffusion import remove_dwi_gradients
-import nibabel as nib
 
 DESCRIPTION = '''
     Remove gradient images from a DWI volume. 
@@ -45,22 +43,15 @@ def main(argv):
         raise
     
 def run_remove_dwi_gradients(dwifile, output, gradients_to_remove):
-    ''' 
-    Remove DWI gradients 
-    '''
     logging.info('DWI: {}'.format(dwifile))
     logging.info('Output file: {}'.format(output))
     logging.info('Remove: {}'.format(gradients_to_remove))
-    
     logging.info('Begin Protocol {}'.format(PROTOCOL_NAME))    
-    # Load dwifile
     logging.info('Read input nifti')
-    
     dwi_im, bvals, bvecs = read_dwi(dwifile)
     out_dwi_im, out_bvals, out_bvecs = remove_dwi_gradients(dwi_im, bvals, bvecs, gradients_to_remove)
     is_valid_dwi(out_dwi_im, out_bvals, out_bvecs, True)
     write_dwi(output, out_dwi_im, out_bvals, out_bvecs)
-    
     logging.info('End of Protocol {}'.format(PROTOCOL_NAME))
     
 if __name__ == '__main__': 

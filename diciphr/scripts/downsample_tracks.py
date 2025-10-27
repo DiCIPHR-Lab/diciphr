@@ -1,13 +1,11 @@
 #! /usr/bin/env python 
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-                DiciphrArgumentParser, DiciphrException )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.nifti_utils import read_nifti
 from diciphr.tractography.track_utils import downsample_tracks
 from dipy.io.streamline import load_trk, save_trk
 from dipy.io.stateful_tractogram import Space, StatefulTractogram
-from nibabel.trackvis import TrackvisFile 
 
 DESCRIPTION = '''
     Downsample a .trk file by a given percentage. 

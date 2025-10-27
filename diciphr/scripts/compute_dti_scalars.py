@@ -1,8 +1,7 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-                DiciphrArgumentParser, DiciphrException )
+from diciphr.utils import check_inputs, protocol_logging, DiciphrArgumentParser
 from diciphr.nifti_utils import read_nifti, write_nifti, strip_nifti_ext, get_nifti_ext
 from diciphr.diffusion import TensorScalarCalculator, is_tensor
 
@@ -63,7 +62,7 @@ def main(argv):
     try:
         check_inputs(args.tensor_filename, nifti=True)
         if not is_tensor(read_nifti(args.tensor_filename)):
-            raise DiciphrException('Input image is not tensor!')
+            raise ValueError('Input image is not tensor!')
         if args.mask_filename is not None:
             check_inputs(args.mask_filename, nifti=True)
         # Decide what to do 
@@ -89,7 +88,7 @@ def main(argv):
                 tasks.append('c')
         tasks = list(set(tasks)) # pare down to unique entries
         if len(tasks) < 1:
-            raise DiciphrException('Nothing to do!') 
+            raise ValueError('Nothing to do!') 
         run_diffusion_scalar_calculator(args.tensor_filename, args.output_dir, tasks, mask_filename=args.mask_filename)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")

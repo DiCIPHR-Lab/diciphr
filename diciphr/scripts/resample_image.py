@@ -1,11 +1,9 @@
 #! /usr/bin/env python
 
-import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, is_writable,
-                protocol_logging, DiciphrArgumentParser, DiciphrException )
+import sys, logging
+from diciphr.utils import ( check_inputs, protocol_logging, DiciphrArgumentParser )
 from diciphr.nifti_utils import ( read_nifti, read_dwi, write_nifti, write_dwi, 
                 resample_image, strip_nifti_ext )
-import nibabel as nib
 
 DESCRIPTION = '''
     Resample a Nifti image.
@@ -62,17 +60,17 @@ def run_resample_nifti(input, output, voxelsizes=[], interp='Linear', master_fn=
         if len(voxelsizes) == 1:
             voxelsizes *= 3
         elif len(voxelsizes) != 3:
-            raise DiciphrException("Voxel sizes must be provided as 1 number or 3 numbers")
+            raise ValueError("Voxel sizes must be provided as 1 number or 3 numbers")
         logging.info("Voxel sizes: {}".format(voxelsizes))
     else:
-        raise DiciphrException("One of voxel sizes or master must be provided")
+        raise ValueError("One of voxel sizes or master must be provided")
     logging.info("Interpolation: {}".format(interp))
     
     try:
         nifti_im, bvals, bvecs = read_dwi(input)
         logging.info('DWI input detected.')
         is_dwi = True
-    except DiciphrException:
+    except:
         logging.info('Non-DWI input detected.')
         nifti_im = read_nifti(input)
         is_dwi = False

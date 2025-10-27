@@ -1,10 +1,8 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-                DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import ( read_nifti, write_nifti, 
-                cut_region )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.nifti_utils import read_nifti, write_nifti, cut_region
 
 DESCRIPTION = '''
     Cut a Nifti ROI into multiple regions. 

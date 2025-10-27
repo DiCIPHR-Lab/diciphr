@@ -1,8 +1,7 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-                    DiciphrArgumentParser, DiciphrException )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.connectivity.connmat_utils import read_connmat, density, nodestrength, degree, prune_mat
 from diciphr.connectivity.topology import ( efficiency_bin, efficiency_wei,
                     betweenness_bin, betweenness_wei, 
@@ -10,7 +9,6 @@ from diciphr.connectivity.topology import ( efficiency_bin, efficiency_wei,
                     transitivity_bin, transitivity_wei,
                     pathlength_wei, pathlength_bin,
                     modularity_louvain_wei, modularity_louvain_bin )
-import numpy as np
 import pandas as pd
 from glob import glob 
 
@@ -83,7 +81,7 @@ def main(argv):
             node_names = [ a.strip() for a in open(args.nodes, 'r').readlines() ][:n]
         else:
             node_names = None
-        logging.info('Running connmat measures for {} subjects and {} densities'.format(len(subjects), len(args.densities)))
+        logging.info(f'Running connmat measures for {len(subjects)} subjects and {len(args.densities)} densities')
         dfs = connmat_measures(matfiles, subjects, args.densities, 
                     node_names=node_names, 
                     global_=not(args.local_only), local_=not(args.global_only),
@@ -91,8 +89,8 @@ def main(argv):
                     )
         for d in dfs:
             df = dfs[d]
-            out_f = args.output_base+'_{}.csv'.format(d)
-            logging.info('Writing sheet to filename {}'.format(out_f))
+            out_f = f'{args.output_base}_{d}.csv'
+            logging.info(f'Writing sheet to filename {out_f}')
             df.to_csv(out_f, sep=',', index=True, header=True, index_label='Subject')
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
@@ -102,7 +100,7 @@ def connmat_measures(matfiles, subjects, densities, node_names=None, global_=Tru
     dfs = dict([ (d, pd.DataFrame(index=subjects)) for d in densities ])
     mats = [ read_connmat(m) for m in matfiles ]
     if node_names is None:
-        node_names = ['node{}'.format(i) for i in range(len(mats[0]))]
+        node_names = [f'node{i}' for i in range(len(mats[0]))]
     for d in densities:
         logging.info('Prune matrices to target density {}'.format(d))
         pruned_mats = [ prune_mat(m, density_target=d) for m in mats ] 
@@ -111,7 +109,7 @@ def connmat_measures(matfiles, subjects, densities, node_names=None, global_=Tru
             df = dfs[d]
             df.loc[s, 'density'] = density(m)
             if global_:
-                logging.info('Global measures: {} out of {}'.format(i+1, nsubjs))
+                logging.info(f'Global measures: {i+1} out of {nsubjs}')
                 # efficiency, pathlength, assortativity, transitivity, modularity
                 if weighted:
                     df.loc[s, 'Global-efficiency-wtd'] = efficiency_wei(m, local=False)

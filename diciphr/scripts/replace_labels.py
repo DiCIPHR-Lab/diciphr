@@ -1,9 +1,8 @@
 #! /usr/bin/env python
 import os, sys, logging
 from diciphr.utils import ( check_inputs, make_dir, protocol_logging,
-                    DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import read_nifti
-import nibabel as nib
+                    DiciphrArgumentParser )
+from diciphr.nifti_utils import read_nifti, nifti_image, write_nifti
 import numpy as np
 import pandas as pd
 
@@ -53,13 +52,12 @@ def main(argv):
         if args.csv:
             logging.info('CSV lookup mode.')
             check_inputs(args.csv)
-            _skiprows = 0
-            _lut = pd.read_csv(args.csv, header=None)
-            _columns = [_lut.columns[0], _lut.columns[1]]
-            _lut = _lut.loc[:,_columns]
-            _lut = _lut.to_numpy()
-            input_list = list(_lut[:,0])
-            output_list= list(_lut[:,1])
+            lut = pd.read_csv(args.csv, header=None)
+            columns = [lut.columns[0], lut.columns[1]]
+            lut = lut.loc[:,columns]
+            lut = lut.to_numpy()
+            input_list = list(lut[:,0])
+            output_list= list(lut[:,1])
         elif args.output_list:
             logging.info('Input list/output list mode.')
             check_inputs(args.input_list)
@@ -69,7 +67,7 @@ def main(argv):
         elif args.input_list:
             logging.info('Input list mode.')
             if not args.order:
-                raise DiciphrException('No output list given and order is False. Nothing to do!')
+                raise ValueError('No output list given and order is False. Nothing to do!')
             check_inputs(args.input_list)
             input_list = list([int(a.strip()) for a in open(args.input_list,'r').readlines()])
             output_list = range(1,1+len(input_list))
@@ -78,45 +76,24 @@ def main(argv):
             input_list = list(np.unique(_data[_data>0]))
             output_list = range(1,1+len(input_list))
         else:
-            raise DiciphrException('No output list given and order_labels is False. Nothing to do!')
+            raise ValueError('No output list given and order_labels is False. Nothing to do!')
         logging.info('Run replace_labels')
-        output_im = replace_labels(atlas_im, input_list, output_list)
-        logging.info('Save to output {}'.format(args.output))
-        output_im.to_filename(args.output)
+        replace_labels(atlas_im, args.output, input_list, output_list)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
-def replace_labels(atlas_im, input_list, output_list):
-    ''' 
-    Replace labels in an atlas. 
-    
-    Parameters
-    ----------
-    atlas_im : nibabel.Nifti1Image
-        Probtrackx directory.
-    input_list : list
-        Input list of labels
-    output_list : list
-        Output list of labels. 
-    Returns
-    -------
-    None
-    '''
+def replace_labels(atlas_im, output_filename, input_list, output_list):
     atlas_data = atlas_im.get_fdata()
     atlas_affine = atlas_im.affine
-    atlas_header = nib.Nifti1Header()
-    atlas_header.set_sform(atlas_affine)
-    atlas_header.set_qform(atlas_affine)
-    
     logging.info('Input list: '+', '.join(map(str,input_list)))
     logging.info('Output list: '+', '.join(map(str,output_list)))
-    
     new_atlas_data = np.zeros(atlas_data.shape, dtype=np.float32)
-    for _i, _o in zip(input_list, output_list):
-        new_atlas_data[atlas_data == _i] = _o 
-    new_atlas_im = nib.Nifti1Image(new_atlas_data, atlas_affine, atlas_header)
-    return new_atlas_im
+    for lbl, val in zip(input_list, output_list):
+        new_atlas_data[atlas_data == lbl] = val 
+    new_atlas_im = nifti_image(new_atlas_data, atlas_affine)
+    logging.info(f'Save to output {output_filename}')
+    write_nifti(output_filename, new_atlas_im)
     
 if __name__ == '__main__': 
     main(sys.argv[1:])

@@ -58,7 +58,7 @@ def main(argv):
         try:
             nifti_img, bvals, bvecs = read_dwi(args.nifti_file)
             diffusion_input = True
-        except DiciphrException:
+        except:
             nifti_img = read_nifti(args.nifti_file)
             diffusion_input = False
         if args.mask_nii:

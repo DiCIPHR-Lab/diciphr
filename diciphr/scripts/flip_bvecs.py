@@ -1,12 +1,11 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging,
-                    DiciphrArgumentParser, DiciphrException )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 import numpy as np
 
 DESCRIPTION = '''
-    Flip bvecs file along X, Y, or Z axis.  
+    Flip bvecs file along X, Y, or Z axis and/or swap axes of bvec file.  
 '''
 
 PROTOCOL_NAME='Flip_Bvecs'
@@ -33,6 +32,18 @@ def buildArgsParser():
                     required=False, default=False,
                     help='Flip the bvec along the Z direction.'
                     )
+    p.add_argument('--xy',action='store_true',dest='swap_xy',
+                    required=False, default=False,
+                    help='Swap the x and y axes (occurs after any flipping).'
+                    )
+    p.add_argument('--yz',action='store_true',dest='swap_yz',
+                    required=False, default=False,
+                    help='Swap the y and z axes (occurs after any flipping).'
+                    )
+    p.add_argument('--xz',action='store_true',dest='swap_xz',
+                    required=False, default=False,
+                    help='Swap the x and z axes (occurs after any flipping).'
+                    )
     return p
     
 def main(argv):
@@ -44,12 +55,12 @@ def main(argv):
     check_inputs(args.bvecfile)
     try:    
         run_flip_bvec(args.bvecfile, args.outfile, 
-            args.flip_x, args.flip_y, args.flip_z)
+            args.flip_x, args.flip_y, args.flip_z, args.swap_xy, args.swap_yz, args.swap_xz)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
-def run_flip_bvec(bvecfile, outfile, flip_x, flip_y, flip_z):
+def run_flip_bvec(bvecfile, outfile, flip_x, flip_y, flip_z, swap_xy, swap_yz, swap_xz):
     ''' 
     Flip bvec file along axes. 
     
@@ -65,7 +76,12 @@ def run_flip_bvec(bvecfile, outfile, flip_x, flip_y, flip_z):
         If true, flip along Y axis. 
     flip_z : bool
         If true, flip along Z axis. 
-        
+    swap_xy : bool
+        If true, swap X and Y axes. 
+    swap_yz : bool
+        If true, swap Y and Z axes. 
+    swap_xz : bool
+        If true, swap X and Z axes. 
     Returns
     -------
     None
@@ -82,6 +98,18 @@ def run_flip_bvec(bvecfile, outfile, flip_x, flip_y, flip_z):
     if flip_z:
         logging.info('Flipping bvecs along Z axis')
         bvecs[2,:] *= -1 
+    if swap_xy:
+        bvecs_o = bvecs.copy()
+        bvecs[0,:] = bvecs_o[1,:]
+        bvecs[1,:] = bvecs_o[0,:]
+    if swap_yz:
+        bvecs_o = bvecs.copy()
+        bvecs[1,:] = bvecs_o[2,:]
+        bvecs[2,:] = bvecs_o[1,:]
+    if swap_xz:
+        bvecs_o = bvecs.copy()
+        bvecs[0,:] = bvecs_o[2,:]
+        bvecs[2,:] = bvecs_o[0,:]
     bvecs += 0 
     logging.info('Writing bvecs file {}'.format(outfile))
     np.savetxt(outfile, bvecs, fmt='%0.8f')

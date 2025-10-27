@@ -1,10 +1,8 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-                DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import ( read_nifti, write_nifti, 
-                strip_nifti_ext, crop_pad_image )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.nifti_utils import read_nifti, read_dwi, write_nifti, write_dwi, crop_pad_image
 
 DESCRIPTION = '''
     Crop or pad a Nifti volume. 
@@ -51,11 +49,11 @@ def main(argv):
         raise
     
 def run_crop_pad_image(datafile, outputfile, x_adjust=[0,0], y_adjust=[0,0], z_adjust=[0,0]):
-    logging.info('datafile: {}'.format(datafile))
-    logging.info('outputfile: {}'.format(outputfile))
-    logging.info('x_adjust: {}'.format(x_adjust))
-    logging.info('y_adjust: {}'.format(y_adjust))
-    logging.info('z_adjust: {}'.format(z_adjust))
+    logging.info(f'datafile: {datafile}')
+    logging.info(f'outputfile: {outputfile}')
+    logging.info(f'x_adjust: {x_adjust}')
+    logging.info(f'y_adjust: {y_adjust}')
+    logging.info(f'z_adjust: {z_adjust}')
     x_adjust=list(map(int,x_adjust))
     y_adjust=list(map(int,y_adjust))
     z_adjust=list(map(int,z_adjust))

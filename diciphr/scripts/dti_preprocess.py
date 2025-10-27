@@ -1,8 +1,7 @@
 #! /usr/bin/env python
 
 import os, sys, logging, time
-from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
-               DiciphrArgumentParser, DiciphrException )
+from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi,
                mask_nifti, json_files_from_niftis, 
                resample_image, is_nifti_file, split_image )
@@ -203,7 +202,7 @@ def dwi_filenames_from_directory(directory):
     all_files = sorted(os.listdir(directory))
     bval_files = list(filter(lambda fn: fn.endswith('.bval'), all_files))
     if len(bval_files) == 0:
-        raise DiciphrException('No diffusion .bval files found in directory')
+        raise FileNotFoundError('No diffusion .bval files found in directory')
     nifti_files = []
     for bv in bval_files:
         for ext in ['nii.gz', 'nii', 'hdr']:
@@ -212,7 +211,7 @@ def dwi_filenames_from_directory(directory):
             if is_nifti_file(fn):
                 nifti_files.append(fn)
                 break 
-            raise DiciphrException('Nifti file corresponding to bval file does not exist')
+            raise FileNotFoundError('Nifti file corresponding to bval file does not exist')
     return nifti_files
 
 def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], 

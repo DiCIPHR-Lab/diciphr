@@ -1,11 +1,7 @@
 #! /usr/bin/env python
 
 import os, sys, logging
-from diciphr.utils import ( check_inputs, is_writable, make_dir, 
-                protocol_logging, DiciphrArgumentParser, DiciphrException )
-from diciphr.nifti_utils import ( read_nifti, write_nifti, 
-                strip_nifti_ext, get_nifti_ext )
-from diciphr.diffusion import is_tensor
+from diciphr.utils import make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.statistics.roi_stats import sample_dti_roistats
 import numpy as np
 import pandas as pd 
@@ -84,18 +80,20 @@ def run_roi_stats(args):
     cohort = cohort.loc[exists, :]
     subjects = list(cohort.index)
     if len(subjects) == 0:
-        logging.error('Found data and atlases for {} subjects'.format(len(subjects)))
-        sys.exit(1)
+        raise ValueError(f'Intersection of cohort and roi stats data is zero subjects')
     else:
-        logging.info('Found data and atlases for {} subjects'.format(len(subjects)))
+        logging.info(f'Found data and atlases for {len(subjects)} subjects')
     atlasfiles = [ args.atlas_template.format(s=s) for s in subjects ]   
     datafiles = [ args.filename_template.format(s=s) for s in subjects ]
     logging.info('Calculate ROI stats')
     R = sample_dti_roistats(datafiles, atlasfiles, measures=args.measures, 
                     index=subjects, labels=labels, roi_names=roi_names)
-    for m in args.measures:    
-        output = '{outdir}/ROIstats_{measure}_{scalar}.csv'.format(outdir=args.outdir, measure=m, scalar=args.scalar)
-        R[m].to_csv(output, index_label='Subject')
+    for measure in args.measures:    
+        if args.scalar:
+            output = f'{args.outdir}/ROIstats_{measure}_{args.scalar}.csv'
+        else:
+            output = f'{args.outdir}/ROIstats_{measure}.csv'
+        R[measure].to_csv(output, index_label='Subject')
         logging.info(output)
     
 if __name__ == '__main__':

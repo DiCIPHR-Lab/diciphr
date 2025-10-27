@@ -1,10 +1,10 @@
 #! /usr/bin/env python
 
-import os, sys, logging 
-from diciphr.utils import protocol_logging, DiciphrArgumentParser, DiciphrException
+import sys, logging 
+from diciphr.utils import protocol_logging, DiciphrArgumentParser
 from diciphr.tractography.track_utils import track_density_image 
-import nibabel
-import numpy as np
+from diciphr.nifti_utils import read_nifti, write_nifti
+from nibabel import aff2axcodes, streamlines
 
 DESCRIPTION = '''
     Convert between tractography file types.
@@ -39,39 +39,39 @@ def main(argv):
 
 def convert_tracks(input_files, output_files, ref_nifti=None):
     if not len(input_files) == len(output_files):
-        raise DiciphrException('Length of input_files must match length of output_files!')
+        raise ValueError('Length of input_files must match length of output_files!')
     if ref_nifti is not None:
-        ref_im = nibabel.load(ref_nifti)
-    for input_file,output_file in zip(input_files, output_files):
+        ref_im = read_nifti(ref_nifti)
+    for input_file, output_file in zip(input_files, output_files):
         logging.info('Open {}'.format(input_file))
-        if not nibabel.streamlines.is_supported(input_file):
-            raise DiciphrException('Filetype not supported: {}'.format(input_file))
+        if not streamlines.is_supported(input_file):
+            raise ValueError('Filetype not supported: {}'.format(input_file))
         ext = output_file.split('.')[-1]
         if not ext in ['trk','tck','nii','gz']:
-            raise DiciphrException('Only trk, tck, nii, nii.gz files currently supported!')
+            raise ValueError('Only trk, tck, nii, nii.gz files currently supported!')
         logging.info('Read streamlines')
-        T_in = nibabel.streamlines.load(input_file, lazy_load=False)
+        T_in = streamlines.load(input_file, lazy_load=False)
         tractogram = T_in.tractogram
         if ext == 'trk':
-            header = nibabel.streamlines.TrkFile.create_empty_header()
+            header = streamlines.TrkFile.create_empty_header()
             if ref_nifti is not None:
                 header['voxel_to_rasmm'] = ref_im.affine.copy() # voxel_to_rasmm
-                header['voxel_order'] = "".join(nibabel.aff2axcodes(ref_im.affine)) # voxel_order
+                header['voxel_order'] = "".join(aff2axcodes(ref_im.affine)) # voxel_order
                 header['voxel_sizes'] = ref_im.header.get_zooms()[:3] # voxel_sizes
                 header['dimensions'] = ref_im.shape[:3] # dimensions
             logging.info('Save Trackvis format file to {}'.format(output_file))
-            nibabel.streamlines.save(tractogram, output_file, header=header)
+            streamlines.save(tractogram, output_file, header=header)
         elif ext == 'tck':  
-            header = nibabel.streamlines.TckFile.create_empty_header()
+            header = streamlines.TckFile.create_empty_header()
             logging.info('Save Mrtrix format file to {}'.format(output_file))
-            nibabel.streamlines.save(tractogram, output_file, header=header)
+            streamlines.save(tractogram, output_file, header=header)
         elif ext == 'nii' or ext == 'gz':
             if ref_nifti is None:
-                raise DiciphrException('Reference nifti is required to calculate track density image.')
+                raise ValueError('Reference nifti is required to calculate track density image.')
             logging.info('Calculate track density image')
             tdi_im = track_density_image(T_in.streamlines, ref_im) 
             logging.info('Save NiFTI track density image file to {}'.format(output_file))
-            tdi_im.to_filename(output_file)
+            write_nifti(output_file, tdi_im)
         
 if __name__ == '__main__':
     main(sys.argv[1:])
