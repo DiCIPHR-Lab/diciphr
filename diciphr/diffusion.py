@@ -868,8 +868,10 @@ def prepare_acqparams_json(json_file, nifti_img, mb_factor=None):
         if pe_steps is None:
             pe_steps = matrix_pe_dict[phaseenc[0]]
         if eechosp is None:
-            raise ValueError(f"Insufficient information to get readout time from file {json_file}")
-        totalreadout = float(eechosp) * (float(pe_steps) - 1)
+            logging.warning(f"Insufficient information to get readout time from file {json_file}, so using default value of 0.062. For typical applications of topup, and when running eddy without topup, this value does not need to be exact.")
+            totalreadout = 0.062
+        else:
+            totalreadout = float(eechosp) * (float(pe_steps) - 1)
     acqparams_line = triplets_dict[phaseenc[0]]
     acqparams_line.append(totalreadout)
     logging.debug(f"{acqparams_line}")
