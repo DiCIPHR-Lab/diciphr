@@ -1,5 +1,4 @@
-from connmat_utils import density, degree, nodestrength, normalize_mat, binarize_mat, is_binary
-from diciphr.utils import DiciphrException
+from connmat_utils import normalize_mat, binarize_mat, is_binary
 import numpy as np
 import bct 
 
@@ -12,7 +11,7 @@ def assortativity_bin(connmat):
 
 def assortativity_wei(connmat):
     if is_binary(connmat):
-        raise DiciphrException("Binary input to weighted measure")
+        raise ValueError("Binary input to weighted measure")
     return bct.assortativity_wei(normalize_mat(connmat))
 
 def efficiency_bin(connmat, local=False):
@@ -20,7 +19,7 @@ def efficiency_bin(connmat, local=False):
     
 def efficiency_wei(connmat, local=False):
     if is_binary(connmat):
-        raise DiciphrException("Binary input to weighted measure")
+        raise ValueError("Binary input to weighted measure")
     return bct.efficiency_wei(normalize_mat(connmat), local=local)
     
 def transitivity_bin(connmat):
@@ -28,12 +27,12 @@ def transitivity_bin(connmat):
 
 def transitivity_wei(connmat):
     if is_binary(connmat):
-        raise DiciphrException("Binary input to weighted measure")
+        raise ValueError("Binary input to weighted measure")
     return bct.transitivity_wu(normalize_mat(connmat))
     
 def pathlength_wei(connmat):
     if is_binary(connmat):
-        raise DiciphrException("Binary input to weighted measure")
+        raise ValueError("Binary input to weighted measure")
     try:
         ret = bct.charpath(bct.distance_wei(np.linalg.inv(normalize_mat(connmat)))[0])[0]
     except:
@@ -49,7 +48,7 @@ def pathlength_bin(connmat):
     
 def modularity_louvain_wei(connmat):
     if is_binary(connmat):
-        raise DiciphrException("Binary input to weighted measure")
+        raise ValueError("Binary input to weighted measure")
     return np.max([bct.modularity_louvain_und(normalize_mat(connmat))[1] for _iter in range(100)])
     
 def modularity_louvain_bin(connmat):

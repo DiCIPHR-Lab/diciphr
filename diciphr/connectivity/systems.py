@@ -1,4 +1,3 @@
-from diciphr.utils import DiciphrException
 from diciphr.connectivity.connmat_utils import normalize_mat
 from collections import OrderedDict
 import numpy as np
@@ -53,16 +52,16 @@ def get_system(atlas='desikan', system='cognitive'):
         elif system.lower() == 'functional':
             return desikan_functional_systems
         else:
-            raise DiciphrException('Desikan system name not recognized: {}'.format(system))
+            raise ValueError(f'Desikan sub-network name not recognized: {system}')
     elif atlas == 'atlasppatt':
         if system.lower() == 'chen':
             return atlasppatt_chen_systems
         elif system.lower() == 'yeo':
             return atlasppatt_yeo_systems
         else:
-            raise DiciphrException('Atlasppatt system name not recognized: {}'.format(system))
+            raise ValueError(f'Atlasppatt sub-network name not recognized: {system}')
     else:
-        raise DiciphrException('Atlas name not recognized: {}'.format(atlas))
+        raise ValueError(f'Atlas name not recognized: {atlas}')
 
 def systemConnectivity(A, systemsDict, normalize=False, upper_triangular=False):
     if normalize:
