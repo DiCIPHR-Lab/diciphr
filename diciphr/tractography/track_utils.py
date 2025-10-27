@@ -1,6 +1,6 @@
 import os, logging
 import numpy as np
-from diciphr.utils import ExecCommand, DiciphrException
+from diciphr.utils import ExecCommand, force_to_list
 from diciphr.nifti_utils import read_nifti, write_nifti, nifti_image, threshold_image
 from diciphr.diffusion import calculate_lmax_from_bvecs
 from dipy.io.streamline import load_trk, save_trk 
@@ -19,21 +19,19 @@ def get_lmax_from_bvecs(bvecs, lmax='auto'):
     max_possible_l = calculate_lmax_from_bvecs(bvecs)
     if lmax == 'auto':
         L = max_possible_l
-        logging.info('Mode = {} lmax = {}'.format(lmax, L))
     elif lmax == 'minus_two':
         L = max_possible_l - 2 
-        logging.info('Mode = {} lmax = {}'.format(lmax, L))
     else:
         try:
             L = int(lmax)
-        except ValueError:
-            raise DiciphrException('User provided non-integer argument for lmax not allowed.')
+        except:
+            raise ValueError(f'Non-integer parameter {lmax} passed to lmax.')
         if str(L).isdigit() and ( L % 2 == 0 ):
             if L > max_possible_l:
-                raise DiciphrException('User provided lmax larger than allowed by unique bvecs in the gradient table.')
+                raise ValueError(f'User provided lmax {lmax} larger than allowed by unique bvecs in the gradient table {max_possible_l}.')
         else:
-            raise DiciphrException('User provided forbidden value for lmax.')
-        logging.info('Mode = {} lmax = {}'.format('user_input', L))
+            raise ValueError(f'User provided forbidden value for lmax {lmax}')
+    logging.info(f'lmax = {L}')
     return L 
     
 def angle_threshold_to_curvature(angle_threshold, step_size):
@@ -108,7 +106,7 @@ def spline_filter(input_trk_file, output_trk_file, step_size=0.2):
     ExecCommand(cmd).run()
     return output_trk_file
     
-def filter_tracks_include(input_trk_file, output_trk_file, *include_mask_files):
+def filter_tracks_include(input_trk_file, output_trk_file, include_mask_files):
     """
     Filters streamlines from a .trk file that pass through a binary inclusion mask using DIPY's `target`.
 
@@ -119,6 +117,7 @@ def filter_tracks_include(input_trk_file, output_trk_file, *include_mask_files):
     """
     logging.debug('Loading inclusion masks')
     include_masks = []
+    include_mask_files = force_to_list(include_mask_files)
     for incl_nii in include_mask_files:
         img = read_nifti(incl_nii)
         include_masks.append(img.get_fdata()>0)        
@@ -137,7 +136,7 @@ def filter_tracks_include(input_trk_file, output_trk_file, *include_mask_files):
     logging.debug(f'Filtered tractogram saved to {output_trk_file}')
     return output_trk_file
     
-def filter_tracks_exclude(input_trk_file, output_trk_file, *exclude_mask_files):
+def filter_tracks_exclude(input_trk_file, output_trk_file, exclude_mask_files):
     """
     Filters streamlines from a .trk file that do not pass through a binary inclusion mask using DIPY's `target`.
 
@@ -148,6 +147,7 @@ def filter_tracks_exclude(input_trk_file, output_trk_file, *exclude_mask_files):
     """
     logging.debug('Loading inclusion masks')
     exclude_masks = []
+    exclude_mask_files = force_to_list(exclude_mask_files)
     for excl_nii in exclude_mask_files:
         img = read_nifti(excl_nii)
         exclude_masks.append(img.get_fdata()>0)        
