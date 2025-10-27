@@ -9,7 +9,10 @@ import os, logging
 import nibabel as nib
 import numpy as np
 from diciphr.utils import ( which, TempDirManager, is_nifti_file, force_to_list, 
-                ExecCommand, ExecFSLCommand, DiciphrException )
+                ExecCommand, ExecFSLCommand )
+from scipy.ndimage.morphology import generate_binary_structure, binary_erosion, binary_dilation
+from scipy.cluster.vq import kmeans2
+from collections import OrderedDict
 
 ##############################################
 ########   NIFTI FILENAME FUNCTIONS  #########
@@ -29,13 +32,13 @@ def strip_nifti_ext(filename):
     elif filename[-4:] in ['.nii','.hdr','.img']:
         return filename[:-4]
     else:
-        raise DiciphrException('Filename {} is not a Nifti path!'.format(filename))
+        raise ValueError(f'Filename {filename} is not a Nifti path!')
 
 def has_nifti_ext(filename):
     '''Returns true if the file ends with .hdr, .img, .nii, or .nii.gz .'''
     try:
         strip_nifti_ext(filename)
-    except DiciphrException:
+    except:
         return False
     return True
     
@@ -50,25 +53,25 @@ def get_nifti_ext(filename):
     elif filename [-4:] in ('.hdr','.img','.nii'):
         return filename[-3:]
     else:
-        raise DiciphrException('Filename {} is not a Nifti path!'.format(filename))
+        raise ValueError(f'Filename {filename} is not a Nifti path!')
         
 def find_nifti_from_basename(prefix):
-    '''Find a nifti file by adding a nifti extension to a prefix. If cannot be found, raise a DiciphrException.'''
+    '''Find a nifti file by adding a nifti extension to a prefix.'''
     found = []
     for ext in ['hdr','nii','nii.gz']:
         filename='.'.join((prefix,ext))
         try:
             os.stat(filename)
             if not is_nifti_file(filename):
-                raise DiciphrException('Encountered invalid nifti-like file {}'.format(prefix))
+                raise ValueError(f'Invalid nifti-extension file {prefix}')
             else:
                 found.append(filename)
         except: 
             pass
     if len(found) == 0:
-        raise DiciphrException('Cannot find nifti file from prefix {}'.format(prefix))
+        raise FileNotFoundError(f'Cannot find nifti file from prefix {prefix}')
     if len(found) > 1: 
-        raise DiciphrException('Found multiple nifti files from prefix {}'.format(prefix))
+        raise ValueError(f'Found multiple nifti files from prefix {prefix}')
     return found[0]
 
 def match_nifti_filenames(directory, match_strings, diffusion=False, json=True):
@@ -223,7 +226,7 @@ def write_nifti(filename, nifti_im=None, data=None, affine=None):
     '''
     logging.debug('diciphr.utils.write_nifti')
     if not has_nifti_ext(filename):
-        raise DiciphrException('Filename {} is not a valid Nifti path!'.format(filename))
+        raise ValueError(f'Filename {filename} is not a valid Nifti path!')
     if nifti_im is None:
         nifti_im = nifti_image(data, affine)
     if affine is None:
@@ -231,7 +234,7 @@ def write_nifti(filename, nifti_im=None, data=None, affine=None):
     nifti_im.set_qform(affine, code=1)
     nifti_im.set_sform(affine, code=1)
     nifti_im.to_filename(filename)
-    logging.info("Writing NiFTI to file {}".format(filename))
+    logging.info(f'Writing NiFTI to file {filename}')
     return filename
         
 def read_gradients(bval_file, bvec_file):
@@ -273,7 +276,7 @@ def is_valid_dwi(dwi_im, bvals, bvecs, raise_if_invalid=False):
     bvecs : numpy.ndarray
         The bvecs array
     raise_if_invalid : Optional[bool]
-        raise a DiciphrException if dwi is not valid.
+        raise a ValueError if dwi is not valid.
         
     Returns
     -------
@@ -286,7 +289,7 @@ def is_valid_dwi(dwi_im, bvals, bvecs, raise_if_invalid=False):
     dwi_n = 1 if len(dwi_im.shape)<4 else dwi_im.shape[-1]
     dimensions_valid = (dwi_n == bvals_n) and (dwi_n == bvecs_n) and (bvecs_dim == 3) and (bvals_dim == 1)
     if raise_if_invalid and not dimensions_valid:
-        raise DiciphrException('Not a valid diffusion nifti and bval/bvec')
+        raise ValueError('Not a valid diffusion nifti and bval/bvec')
     return dimensions_valid
     
 def read_dwi(filename, bval_file=None, bvec_file=None, force=False):
@@ -323,7 +326,7 @@ def read_dwi(filename, bval_file=None, bvec_file=None, force=False):
             bvals = np.zeros((1,N))
             bvecs = np.zeros((3,N))
         else:
-            raise DiciphrException('Cannot find bval/bvec files for DWI image')
+            raise FileNotFoundError('Cannot find bval/bvec files for DWI image')
     else:
         bvals, bvecs = read_gradients(bval_file, bvec_file) 
     is_valid_dwi(dwi_im, bvals, bvecs, True)
@@ -378,7 +381,7 @@ def reorient_nifti(nifti_im, orientation = 'LPS'):
         :returns: nifti_im_reoriented
     '''
     if not _is_valid_orientation(orientation):
-        raise DiciphrException('Not a valid orientation: {}'.format(orientation))
+        raise ValueError(f'Not a valid orientation: {orientation}')
     
     nii_affine = nifti_im.affine
     nii_data = nifti_im.get_fdata()
@@ -412,9 +415,9 @@ def reorient_bvec(bvec, old_orientation, new_orientation):
         The reoriented bvec array
     '''
     if not _is_valid_orientation(old_orientation):
-        raise DiciphrException('Not a valid orientation: {}'.format(old_orientation))
+        raise ValueError(f'Not a valid NIfTI orientation: {old_orientation}')
     if not _is_valid_orientation(new_orientation):
-        raise DiciphrException('Not a valid orientation: {}'.format(new_orientation))
+        raise ValueError(f'Not a valid NIfTI orientation: {new_orientation}')
     orig_orient_code = tuple(s.upper() for s in old_orientation)
     new_orient_code = tuple(s.upper() for s in new_orientation)
     orig_orient_ornt = nib.orientations.axcodes2ornt(orig_orient_code)
@@ -439,7 +442,7 @@ def reorient_dwi(dwi_im, bvals, bvecs, orientation = 'LPS'):
         :returns: (dwi_im_reoriented, bvals, bvecs_reoriented)
     '''
     if not _is_valid_orientation(orientation):
-        raise DiciphrException('Not a valid orientation: {}'.format(orientation))
+        raise ValueError(f'Not a valid NIfTI orientation: {orientation}')
     nii_affine = dwi_im.affine
     new_orient_code = tuple(s.upper() for s in orientation)
     orig_orient_code = nib.aff2axcodes(nii_affine)
@@ -517,9 +520,9 @@ def resample_image(nifti_im, voxelsizes=None, interp='Linear', master=None, work
     allowed_interps = ['Linear','NearestNeighbor','MultiLabel','Gaussian','BSpline','GenericLabel',
         'CosineWindowedSinc','WelchWindowedSinc','HammingWindowedSinc','LanczosWindowedSinc']
     if interp not in allowed_interps:   
-        raise DiciphrException('interp must be one of {}.'.format(' '.join(allowed_interps)))
+        raise ValueError(f'interp must be one of {allowed_interps}')
     if voxelsizes is None and master is None:
-        raise DiciphrException('One of voxelsizes or master must be provided')
+        raise ValueError('One of voxelsizes or master must be provided')
     with TempDirManager(prefix="resample_image") as manager:
         tmpdir = manager.path()
         write_nifti(os.path.join(tmpdir, 'input.nii.gz'), nifti_im)        
@@ -596,7 +599,6 @@ def erode_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=Tr
     nibabel.Nifti1Image
         The eroded mask image
     '''
-    from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
     def _is_odd_pos(integer):
         _is_num = (float(integer) == integer)
         _is_int = (int(integer) == integer)
@@ -605,7 +607,7 @@ def erode_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=Tr
         return _is_num and _is_int and _is_pos and _is_odd
         
     if not kernel in ['NN1','NN2','NN3','sphere','gauss','box']:
-        raise DiciphrException('Kernel {} not supported'.format(kernel))
+        raise ValueError(f'Kernel {kernel} not supported')
     
     #pad by 1 voxel so that voxels touching image boundary are eroded. 
     if erode_away_from_border: 
@@ -616,12 +618,12 @@ def erode_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=Tr
     binarized_data[data > 0] = 1 
     if kernel in ['NN1','NN2','NN3']:
         if not _is_odd_pos(kernel_size):
-            raise DiciphrException('Kernel size needs to be a positive odd integer')
+            raise ValueError('Kernel size must be a positive odd integer')
         nn_kernel = generate_binary_structure(3,int(kernel[-1]))
         eroded_data = binary_erosion(binarized_data, nn_kernel, iterations=iterations).astype(data.dtype)
     elif kernel in ['sphere','gauss','box']:
         if kernel == 'box' and not _is_odd_pos(kernel_size):
-            raise DiciphrException('Kernel size needs to be a positive odd integer')
+            raise ValueError('Kernel size must be a positive odd integer')
         with TempDirManager(prefix='fsl_erosion') as manager: 
             tmpdir = manager.path() 
             tmp_nii = os.path.join(tmpdir,'in.nii')
@@ -669,7 +671,6 @@ def dilate_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=T
     nibabel.Nifti1Image
         The eroded mask image
     '''
-    from scipy.ndimage.morphology import generate_binary_structure, binary_dilation
     def _is_odd_pos(integer):
         _is_num = (float(integer) == integer)
         _is_int = (int(integer) == integer)
@@ -678,10 +679,10 @@ def dilate_image(nifti_im, kernel='NN1', kernel_size=1, iterations=1, binarize=T
         return _is_num and _is_int and _is_pos and _is_odd
         
     if not kernel in ['NN1','NN2','NN3','sphere','gauss','box']:
-        raise DiciphrException('Kernel {} not supported'.format(kernel))
+        raise ValueError('Kernel {kernel} not supported')
     if kernel in ['NN1','NN2','NN3']:
         if not _is_odd_pos(kernel_size):
-            raise DiciphrException('Kernel size needs to be a positive odd integer')
+            raise ValueError('Kernel size must be a positive odd integer')
         nn_kernel = generate_binary_structure(3,int(kernel[-1]))
         data = nifti_im.get_fdata()
         binarized_data = np.zeros(data.shape, dtype=np.int8)
@@ -718,7 +719,6 @@ def cut_region(roi_img, k):
     list
         A list of nibabel.Nifti1Image objects 
     '''
-    from scipy.cluster.vq import kmeans2
     affine = roi_img.get_affine()
     roi = roi_img.get_fdata()
     logging.info("Perform clustering...")
@@ -784,27 +784,27 @@ def flirt_register(input_im, ref_im,
     '''
     
     if not cost in ('mutualinfo','corratio','normcorr','normmi','leastsq','labeldiff'):
-        raise DiciphrException('cost argument must be one of mutualinfo, corratio, normcorr, normmi, leastsq, labeldiff')
+        raise ValueError('cost argument must be one of mutualinfo, corratio, normcorr, normmi, leastsq, labeldiff')
     if not searchcost in ('mutualinfo','corratio','normcorr','normmi','leastsq','labeldiff'):
-        raise DiciphrException('searchcost argument must be one of mutualinfo, corratio, normcorr, normmi, leastsq, labeldiff')
+        raise ValueError('searchcost argument must be one of mutualinfo, corratio, normcorr, normmi, leastsq, labeldiff')
     if not interp in ('trilinear','nearestneighbor','nearestneighbour','sinc'):
-        raise DiciphrException('interp argument must be one of trilinear, nearestneighbour, sinc')
+        raise ValueError('interp argument must be one of trilinear, nearestneighbour, sinc')
     if interp == 'nearestneighbor':
         interp = 'nearestneighbour'
     if not dof in (3, 6, 7, 12):
-        raise DiciphrException('dof argument must be one of 3, 6, 7, 12')
+        raise ValueError('dof argument must be one of 3, 6, 7, 12')
     try:
         coarsesearch == float(coarsesearch)
         if coarsesearch <= 0: 
             raise ValueError('non-positive') 
     except:
-        raise DiciphrException('coarsesearch argument must be a positive number!')
+        raise ValueError('coarsesearch argument must be a positive number!')
     try:
         finesearch == float(finesearch)
         if finesearch <= 0: 
             raise ValueError('non-positive') 
     except:
-        raise DiciphrException('finesearch argument must be a positive number!')
+        raise ValueError('finesearch argument must be a positive number!')
     if search_range:
         searchrx = search_range
         searchry = search_range
@@ -817,7 +817,7 @@ def flirt_register(input_im, ref_im,
             _s2 == float(_s2)
             search_ranges[idx] = (_s1, _s2)
         except:
-            raise DiciphrException('search range must be a list of two numbers') 
+            raise ValueError('search range must be a list of two numbers') 
     with TempDirManager(prefix='fsl_flirt') as manager:
         tmpdir = manager.path()
         input_filename = os.path.join(tmpdir, 'input.nii.gz')
@@ -836,8 +836,6 @@ def flirt_register(input_im, ref_im,
                '-searchrx', search_ranges[2][0], search_ranges[2][1]]
         cmd = list(map(str,cmd)) 
         returncode, stdout, stderr = ExecFSLCommand(cmd).run()
-        if returncode != 0:
-            raise DiciphrException('Error encountered while runnig flirt')
         out_mat = np.loadtxt(outmat_filename).astype(np.float32)
         tmp_im = read_nifti(output_filename)
         out_im = nifti_image(tmp_im.get_fdata(), tmp_im.affine, tmp_im.header)
@@ -895,7 +893,6 @@ def bet2_mask_nifti(nifti_im, f=0.2, g=0.0, erode_iterations=0, return_brain=Fal
         The mask image
     '''
     def erode_mask(nifti_im,connectivity=1,iterations=1):
-        from scipy.ndimage.morphology import binary_erosion, generate_binary_structure
         structure = generate_binary_structure(3,connectivity)
         data = (nifti_im.get_fdata() > 0).astype(np.int16)
         data_eroded = binary_erosion(data, structure, iterations=iterations).astype(np.int16)
@@ -926,24 +923,31 @@ def bet2_mask_nifti(nifti_im, f=0.2, g=0.0, erode_iterations=0, return_brain=Fal
         return mask_im
     
 def synthstrip_mask_nifti(nifti_im, sif_file=None, border=1, fill=0, no_csf=False, return_distance=False, return_brain=False):
+    exe = 'apptainer'
+    if sif_file and not os.path.exists(sif_file):
+        raise FileNotFoundError('Container for synthstrip not found')
     if sif_file is None:
         sif_file = os.environ.get('DICIPHR_SYNTHSTRIPSIF')
-        if not sif_file:
-            raise EnvironmentError('Container for synthstrip not found in environment. Set DICIPHR_SYNTHSTRIPSIF')
-    else:
-        if not os.path.exists(sif_file):
-            raise FileNotFoundError('Container for synthstrip not found')
-    with TempDirManager(prefix='bet2_mask_nifti') as manager:
+    if sif_file is None:
+        exe = 'mri_synthstrip'
+    logging.debug(f'Check system path for executable {exe}')
+    which(exe)        
+    with TempDirManager(prefix='synthstrip_mask_nifti') as manager:
         tmpdir = manager.path()
         tmp_filename = os.path.join(tmpdir, 'input.nii.gz')
         tmp_maskfilename = os.path.join(tmpdir, 'mask.nii.gz')
         tmp_distfilename = os.path.join(tmpdir, 'distance.nii.gz')
         tmp_outfilename = os.path.join(tmpdir, 'output.nii.gz')
         write_nifti(tmp_filename, nifti_im)
-        cmd = ['apptainer', 'exec', '-B', f'{tmpdir}:{tmpdir}', 
-               sif_file, 'mri_synthstrip', 
-               '-i', tmp_filename, '-o', tmp_outfilename, '-m', tmp_maskfilename, 
-               '-d', tmp_distfilename, '-b', str(border), '-f', str(fill)]
+        if exe == 'apptainer':
+            cmd = ['apptainer', 'exec', '-B', f'{tmpdir}:{tmpdir}', 
+                   sif_file, 'mri_synthstrip', '-i', tmp_filename, 
+                   '-o', tmp_outfilename, '-m', tmp_maskfilename, 
+                   '-d', tmp_distfilename, '-b', str(border), '-f', str(fill)]
+        else: 
+            cmd = ['mri_synthstrip', '-i', tmp_filename, '-o', tmp_outfilename, 
+                   '-m', tmp_maskfilename, '-d', tmp_distfilename, 
+                   '-b', str(border), '-f', str(fill)]
         if no_csf:
             cmd.append('--no-csf')
         ExecCommand(cmd).run()
@@ -1005,14 +1009,13 @@ def extract_roi(atlas_im, roi_index):
     
     '''
     if not 'int' in str(atlas_im.get_data_dtype()):
-        raise DiciphrException('Will not try to extract ROI from non-integer image')
+        raise ValueError('Will not try to extract ROI from non-integer image')
     atlas_data = atlas_im.get_fdata()
     roi_data = (atlas_data==int(roi_index)).astype(atlas_im.get_data_dtype())
     roi_im = nifti_image(roi_data, atlas_im.affine, atlas_im.header)
     return roi_im
     
 def center_of_mass_atlas(atlas_im, labels=[], return_voxel_coordinates=False):
-    from collections import OrderedDict
     atlas_data = atlas_im.get_fdata().astype(np.int16)
     atlas_affine = atlas_im.affine
     if not labels:
@@ -1028,7 +1031,7 @@ def center_of_mass_atlas(atlas_im, labels=[], return_voxel_coordinates=False):
             coordinate_coms[label] = list(np.dot(atlas_affine, voxel_vector).flatten()[:3])
         else:
             coordinate_coms[label] = [ int(np.round(x_com)), int(np.round(y_com)), int(np.round(z_com)) ]
-    return coordinate_coms  
+    return coordinate_coms
   
 def split_image(nifti_im, dimension='t', index=None, squeeze=False):
     '''Split an image along a given dimension and save to output_filebase.
@@ -1050,9 +1053,9 @@ def split_image(nifti_im, dimension='t', index=None, squeeze=False):
     '''
     _dimensions = ('x','y','z','t')
     if not dimension in _dimensions:
-        raise DiciphrException('dimension argument must be one of ( t, x, y, z )')
+        raise ValueError('Dimension argument must be one of ( t, x, y, z )')
     if _dimensions.index(dimension) + 1 > len(nifti_im.shape):
-        raise DiciphrException('dimension argument out of range for image')
+        raise ValueError('Dimension argument out of range for image')
     data = nifti_im.get_fdata()
     affine = nifti_im.affine.copy()
     header = nifti_im.header.copy()
@@ -1105,10 +1108,10 @@ def crop_pad_image(nifti_im, x_adjust=[0,0], y_adjust=[0,0], z_adjust=[0,0]):
             The output nifti image
     '''  
     if (len(x_adjust) != 2) or (len(y_adjust) != 2) or (len(z_adjust) != 2):
-        raise DiciphrException('Cannot parse adjustment inputs')
+        raise ValueError('Cannot parse adjustment inputs')
     for _el in sum((x_adjust, y_adjust, z_adjust), []):
         if not isinstance(_el, int): 
-            raise DiciphrException('Adjustment values must be int')
+            raise ValueError('Adjustment values must be int')
     aff = nifti_im.affine
     hdr = nifti_im.header
     orig_shape = nifti_im.header.get_data_shape()
@@ -1142,7 +1145,7 @@ def crop_pad_image(nifti_im, x_adjust=[0,0], y_adjust=[0,0], z_adjust=[0,0]):
 def check_affines_and_shapes_match(*images, raise_exception=False):
     logging.debug('diciphr.nifti_utils.check_affines_and_shapes_match')
     affines = [im.affine for im in images]
-    shapes = [im.shape for im in images]
+    shapes = [im.shape[:3] for im in images]
     ret = True
     affine_check = all(np.allclose(affines[0], aff, rtol=1e-05, atol=1e-08) for aff in affines[1:])
     if not affine_check:

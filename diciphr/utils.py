@@ -19,13 +19,7 @@ import numpy as np
 
 # Ensure logging is safely shut down at program exit
 atexit.register(logging.shutdown)
-
-##############################################
-############     EXCEPTIONS     ##############
-##############################################
-class DiciphrException(Exception):
-    pass
-    
+   
 ##############################################
 ############   FILE FUNCTIONS   ##############
 ##############################################
@@ -361,7 +355,7 @@ def is_nifti_file(filename):
     return True
         
 def check_inputs(*paths, nifti=False, directory=False, writable=False):
-    '''For paths in args, check if inputs exist and are readable, and raise a DiciphrException if not.
+    '''For paths in args, check if inputs exist and are readable, and raise an Exception if not.
     
     Parameters
     ----------
@@ -381,7 +375,7 @@ def check_inputs(*paths, nifti=False, directory=False, writable=False):
     '''
     logging.debug('diciphr.utils.check_inputs')
     if len(paths) == 0:
-        raise DiciphrException('No files provided')
+        raise ValueError('No files provided')
     
     not_exist=[]
     not_readable=[]
@@ -389,6 +383,7 @@ def check_inputs(*paths, nifti=False, directory=False, writable=False):
     not_nifti=[]
     not_directory=[]
     for a in paths:
+        logging.debug(f'Check input at path: {a}')
         if not os.access(a, os.F_OK):
             not_exist.append(a)
         elif not os.access(a, os.R_OK):
@@ -401,15 +396,15 @@ def check_inputs(*paths, nifti=False, directory=False, writable=False):
             if nifti and not is_nifti_file(a):
                 not_nifti.append(a)
     if not_exist:
-        raise DiciphrException('Paths do not exist: {}'.format(','.join(not_exist)))
+        raise FileNotFoundError('Paths do not exist: {}'.format(','.join(not_exist)))
     if not_readable:
-        raise DiciphrException('Paths are not readable: {}'.format(','.join(not_readable)))
+        raise PermissionError('Paths are not readable: {}'.format(','.join(not_readable)))
     if not_writable:
-        raise DiciphrException('Paths are not writable: {}'.format(','.join(not_writable)))
+        raise PermissionError('Paths are not writable: {}'.format(','.join(not_writable)))
     if not_directory:
-        raise DiciphrException('Paths are not directories: {}'.format(','.join(not_directory)))
+        raise NotADirectoryError('Paths are not directories: {}'.format(','.join(not_directory)))
     if not_nifti:
-        raise DiciphrException('Files are not valid nifti: {}'.format(','.join(not_nifti)))
+        raise ValueError('Files are not valid nifti: {}'.format(','.join(not_nifti)))
     if len(paths) > 1:
         return tuple(os.path.realpath(_a) for _a in paths)
     else:
@@ -463,7 +458,7 @@ def which(program, raise_exception=True):
             if is_exe(exe_file):
                 return exe_file
     if raise_exception:
-        raise DiciphrException('Cannot find executable: {}'.format(program))
+        raise EnvironmentError('Cannot find executable: {}'.format(program))
     return None
  
 def get_slurm_jobid():

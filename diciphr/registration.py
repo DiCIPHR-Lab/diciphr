@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 import os, logging, shutil
-from diciphr.utils import DiciphrException, ExecCommand, TempDirManager, force_to_list, which
+from diciphr.utils import ExecCommand, TempDirManager, force_to_list, which
 from diciphr.nifti_utils import ( write_nifti, resample_image, apply_mask_to_image, threshold_image )
 import numpy as np
     
@@ -141,7 +141,7 @@ class AntsRegistration():
         elif warped_outputs == 2:
             self.outputs.extend(['--output',f'[{output_prefix},{warped},{invwarped}]'])
         else:
-            raise DiciphrException("Invalid valie of warped_outputs")
+            raise ValueError("Invalid value of warped_outputs")
         
     def set_global_options(self, dimensionality=3, verbose=True, float=False, interpolation='Linear', 
                             histogram_matching=False, winsorize=[0.005,0.995]):
@@ -156,12 +156,6 @@ class AntsRegistration():
     def set_initial(self, initialize='identity', fixed=None, moving=None, initial_xfm_moving=True, invert=False):
         initialize = str(initialize).strip()
         if os.path.exists(initialize):
-            # Value of initial_xfm_moving=(True)/False toggles
-            # --initial-fixed-transform or --initial-moving-transform respectively 
-            # --initial-fixed-transform the moving image is pre-moved by the transform 
-            # --initial-moving-transform the fixed image is pre-moved by the transform 
-#            if not(fixed or moving) or (fixed and moving):
-#                raise DiciphrException('For initializing with existing transform, exactly one of initial_fixed, initial_moving need to be True')
             if invert:
                 initialize = f'[{initialize},1]'
             if initial_xfm_moving:
@@ -181,9 +175,9 @@ class AntsRegistration():
                 # affine origin points 
                 init_code = '2'
             else:
-                raise DiciphrException('Unrecognized initial transform option')
+                raise ValueError('Unrecognized initial transform option')
             if fixed is None or moving is None:
-                raise DiciphrException(f'Fixed and moving images for initialization are required when using initialization method {initialize}')
+                raise ValueError(f'Fixed and moving images for initialization are required when using initialization method {initialize}')
             self.initialize_options=['--initial-moving-transform',f'[{fixed},{moving},{init_code}]']
     
     def add_stage(self, fixed_images, moving_images, transform, metric, convergence, shrink_factors, smoothing_sigmas,
@@ -211,7 +205,7 @@ class AntsRegistration():
             transform_cmd.extend(['-g', str(restrict_deformation)])
         metric_cmd = []
         if not(len(fixed_images) == len(moving_images)):
-            raise DiciphrException("Number of fixed and moving images must be equal")
+            raise ValueError('Number of fixed and moving images must be equal')
         if len(metric_weights)<len(fixed_images) and len(metric_weights)==1:
             metric_weights *= len(fixed_images)
         for fixed, moving, weight in zip(fixed_images, moving_images, metric_weights):
@@ -219,7 +213,7 @@ class AntsRegistration():
             metric_params = ','.join(map(str,metric_params))
             metric_cmd.extend(['--metric', f'{metric}[{fixed},{moving},{weight},{metric_params}]'])
         if not(len(convergence) == len(shrink_factors) == len(smoothing_sigmas)):
-            raise DiciphrException("Iterables convergence, shrink_factors, and smoothing_sigmas do not match in length")
+            raise ValueError('Iterables convergence, shrink_factors, and smoothing_sigmas do not match in length')
         # multi-stage options 
         convergence_cmd = ['--convergence', '['+','.join([
                     'x'.join(map(str,map(int,convergence))), 
@@ -241,13 +235,13 @@ class AntsRegistration():
         elif transform == 'BSplineSyN':
             default_params=[0.1,1,26,3]
         else: 
-            raise DiciphrException("Unrecognized ANTs transform type: {0}".format(transform))
+            raise ValueError(f'Unrecognized ANTs transform type: {transform}')
         if len(transform_params) == 0:
             return (transform, default_params)
         elif len(transform_params) == len(default_params):
             return (transform, transform_params)
         else:
-            raise DiciphrException("Supported ANTs transform {0} cannot accept {1} out of {2} parameters".format(transform, len(transform_params), len(default_params)))
+            raise ValueError(f'Invalid number of parameters to ANTs transform {transform}')
     
     def _validate_metric_params(self, metric, metric_params, samplingStrategy, samplingPercentage):
         if metric in ('MI', 'Mattes'):
@@ -257,15 +251,15 @@ class AntsRegistration():
         elif metric in ('MeanSquares', 'Demons', 'GC'):
             default_params=['NA']
         else: 
-            raise DiciphrException("Unrecognized ANTs metric type: {0}".format(metric))
+            raise ValueError(f'Unrecognized ANTs metric type: {metric}')
         if samplingPercentage < 0 or samplingPercentage > 1:
-            raise DiciphrException("Sampling Percentage must be a float between 0 and 1")
+            raise ValueError('Sampling Percentage must be a float between 0 and 1')
         if len(metric_params) == 0:
             return (metric, default_params+[samplingStrategy,samplingPercentage])
         elif len(metric_params) == len(default_params):
             return (metric, metric_params+[samplingStrategy,samplingPercentage])
         else:
-            raise DiciphrException("Supported ANTs metric {0} cannot accept {1} out of {2} parameters".format(metric, len(metric_params), len(metric_params)))
+            raise ValueError(f'Invalid number of parameters to ANTs metric {metric}')
         
     def _build_cmd(self):
         cmd = ['antsRegistration'] + self.global_options + self.outputs + self.initialize_options
@@ -276,7 +270,7 @@ class AntsRegistration():
         
     def run(self):
         if len(self.stages)==0: 
-            raise DiciphrException('No stages defined, cannot build antsRegistration call')
+            raise ValueError('No stages defined. Cannot build antsRegistration call')
         self._build_cmd()
         return ExecCommand(self.cmd).run()
 

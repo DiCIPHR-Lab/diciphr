@@ -10,7 +10,7 @@ from dipy.denoise.localpca import localpca, mppca
 from dipy.denoise.pca_noise_estimate import pca_noise_estimate 
 from dipy.denoise.gibbs import gibbs_removal
 from diciphr.utils import ( make_dir, force_to_list, read_json_file, 
-                TempDirManager, ExecCommand, ExecFSLCommand, DiciphrException )
+                TempDirManager, ExecCommand, ExecFSLCommand )
 from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, write_dwi,
                 erode_image, check_affines_and_shapes_match, is_valid_dwi, 
                 mask_nifti, apply_mask_to_image, threshold_image, split_image, 
@@ -148,7 +148,7 @@ def join_dwi(*nifti_images):
         if len(dat.shape) == 3:
             dat = dat[...,np.newaxis]
         elif len(dat.shape) != 4:
-            raise DiciphrException('join_dwi expects inputs to be 3D or 4D!')
+            raise ValueError('Inputs must be 3D or 4D!')
         datas.append(dat)
     dwi_data = np.concatenate(datas, axis=3)
     dwi_im = nifti_image(dwi_data, affine)
@@ -176,7 +176,7 @@ def split_dwi(dwi_im):
         ret.append(nifti_image(np.squeeze(dat), dwi_affine))
     return ret
 
-def remove_dwi_gradients(dwi_im,bvals,bvecs,list_of_indices):
+def remove_dwi_gradients(dwi_im, bvals, bvecs, list_of_indices):
     '''Remove gradient images and associated bvectors from a DWI image.
     
     Given a dwi image, bvals, bvecs and a list of indices, 
@@ -204,14 +204,15 @@ def remove_dwi_gradients(dwi_im,bvals,bvecs,list_of_indices):
     if len(list_of_indices) < 1:
         logging.warning('Asked to remove an empty list of gradient images. Returning original DWI')
         return (dwi_im, bvals, bvecs )
-    if max(list_of_indices) >= data.shape[-1]:
-        raise DiciphrException('Cannot remove dwi gradient. Index out of range!')
+    max_index = max(list_of_indices)
+    if max_index >= data.shape[-1]:
+        raise ValueError(f'Cannot remove dwi gradient # {max_index} from {data.shape[-1]} gradients')
     
     bvals_out=bvals.reshape((1,np.size(bvals)))
     bvecs_out=bvecs.copy()
     # are next 2 lines needed? probably not 
     if not (np.size(bvals_out) == np.size(bvecs_out)/3 and np.size(bvals_out) == data.shape[-1]): 
-        raise DiciphrException('Bval, bvec and data do not encode the same number of gradients!')
+        raise ValueError('Bval, bvec and data do not encode the same number of gradients!')
     list_of_indices=sorted(list_of_indices,reverse=True)
     for ind in list_of_indices:
         data = np.delete(data,ind,axis=3)
@@ -1151,7 +1152,7 @@ def apply_topup(images, topup_prefix, acqparamstxt, index=None):
     logging.debug('diciphr.diffusion.apply_topup')
     images = force_to_list(images)
     if len(images) < 1:
-        raise DiciphrException('No images to apply topup to')
+        raise ValueError('No input images provided')
     if index is None:
         index = [1 for img in images]
     with TempDirManager(prefix='apply_topup') as manager:
@@ -1455,7 +1456,7 @@ def calculate_lmax(num_obs):
     L = 2
     min_num_obs = (L+1)*(L+2)/2
     if min_num_obs > num_obs: 
-        raise DiciphrException('Insufficient number dwi directions for smallest value L of 2') 
+        raise ValueError('Insufficient number dwi directions for smallest value L of 2') 
     while True:
         next_L = L+2
         next_min_num_obs = (next_L+1)*(next_L+2)/2
@@ -1521,7 +1522,7 @@ def dwi_multi_b0_temporal_snr(dwi_im, bvals, bvecs, mask_im):
     tol=20
     b0_indices = np.where(bvals.flatten() < tol)
     if len(b0_indices[0]) < 3:
-        raise DiciphrException('Cannot calculate temporal SNR with too few b-zero images.')
+        raise ValueError('Cannot calculate temporal SNR with too few b-zero images.')
     data=dwi_im.get_fdata()
     affine=dwi_im.affine
     mask_data=mask_im.get_fdata()
@@ -1541,15 +1542,15 @@ def dti_roi_stats(tensor_im, atlas_im, labels=None, scalars=['FA','TR','AX','RAD
     atlas_shape = atlas_im.shape
     
     if np.sum(np.abs(tensor_affine - atlas_affine)) > 1e-6 or tensor_shape[:3] != atlas_shape:
-        raise DiciphrException("Tensor image and atlas are not in the same space.") 
+        raise ValueError('Tensor image and atlas are not in the same space.') 
     if not is_tensor(tensor_im):
-        raise DiciphrException("Input Nifti image is not tensor.") 
+        raise ValueError('Input Nifti image is not tensor') 
     for _sc in scalars:
         if not _sc in ['FA','TR','AX','RAD','MD','CL','CP','CS']:
-            raise DiciphrException("Requested an unrecognized scalar code : {}.".format(_sc))
+            raise ValueError(f'Requested an unrecognized scalar code : {_sc}.')
     for _m in measures:
         if not _m in ['mean','median','std']:
-            raise DiciphrException("Requested an unrecognized measure : {}.".format(_m))
+            raise ValueError(f'Requested an unrecognized measure : {_m}.')
             
     C = TensorScalarCalculator(tensor_im, mask_im=mask_im)
     atlas_data = atlas_im.get_fdata()

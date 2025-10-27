@@ -9,15 +9,13 @@ import os, shutil, logging
 from datetime import datetime
 from glob import glob 
 from collections import defaultdict
-from diciphr.utils import ( which, find_all_files_in_dir, 
-            ExecCommand, TempDirManager, DiciphrException )
+from diciphr.utils import which, find_all_files_in_dir, ExecCommand, TempDirManager
 from diciphr.nifti_utils import ( read_nifti, read_dwi, write_nifti, 
             write_dwi, strip_nifti_ext, reorient_nifti, reorient_dwi )
 import pydicom 
 from pydicom.errors import InvalidDicomError
 from pydicom.multival import MultiValue
 import pandas as pd
-from pandas.errors import EmptyDataError
 
 #############################################
 ############  DICOM Utilities  ##############
@@ -108,7 +106,7 @@ def read_dicom_file(filename, stop_before_pixels=False, force=False):
 def get_dicom_series_attributes(dicom_files, keys=None, replace_spaces=False, ignore_errors=True):
     logging.debug('diciphr.dicoms.get_dicom_series_attributes')
     if len(dicom_files) == 0:
-        raise DiciphrException('Input sequence of dicom files is empty.')
+        raise ValueError('Input sequence of dicom files is empty.')
     if keys is None:
         keys = default_keys
     alt_keys = {
@@ -241,7 +239,7 @@ def dicom_series_to_nifti(dicom_files, output_prefix, decompress=False, json=Tru
         
         nifti_files = sorted(list(glob(os.path.join(tmpdir, 'tmp*.nii.gz'))))
         if not nifti_files:
-            raise DiciphrException(f"Nifti file was not created by {dcm2nii_exe}")
+            raise ValueError(f"No Nifti files were created by {dcm2nii_exe}")
         output_files = []
         for nifti_file in nifti_files:
             suffix = strip_nifti_ext(os.path.basename(nifti_file))[3:]
@@ -252,7 +250,7 @@ def dicom_series_to_nifti(dicom_files, output_prefix, decompress=False, json=Tru
             try:
                 nifti_im, bvals, bvecs = read_dwi(nifti_file)
                 _diffusion=True
-            except DiciphrException:
+            except:
                 nifti_im = read_nifti(nifti_file)
                 _diffusion=False 
             if _diffusion:

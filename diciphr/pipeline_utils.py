@@ -8,9 +8,9 @@ Created on Mon Jan 18 14:04:32 2016
 import os, sys, logging
 import numpy as np
 import nibabel as nib
-from diciphr.utils import ( DiciphrException, ExecCommand, TempDirManager, is_nifti_file )
+from diciphr.utils import ExecCommand, TempDirManager, is_nifti_file
 from diciphr.nifti_utils import ( nifti_image, read_nifti, find_nifti_from_basename, 
-                                 extract_roi, reorient_nifti, dilate_image, erode_image )
+                             extract_roi, reorient_nifti, dilate_image, erode_image )
 
 def _check_bedpostx_mask_alignment(bedpostx_subj_dir, log_file=None):
     '''Try to find slices in bedpostX output that do not align with the input mask.'''
@@ -66,20 +66,20 @@ def _check_bedpostx_niftis(bedpostx_subj_dir, log_file=None):
     return ret
     
 def check_bedpostx_output(bedpostx_subj_dir, log_file=None):
-    '''Check all niftis in bedpostX output and raise a DiciphrException.'''
     logging.debug('diciphr.connectivity.check_bedpostx_output')
     niftis_missing = bool(_check_bedpostx_niftis(bedpostx_subj_dir, log_file=log_file))
     mask_alignment_problem = bool(_check_bedpostx_mask_alignment(bedpostx_subj_dir, log_file=log_file))
     if niftis_missing or mask_alignment_problem:
-        raise DiciphrException('BedpostX check failed')
+        raise FileNotFoundError('Files missing after running BedpostX')
+    elif mask_alignment_problem:
+        raise ValueError('Mask alignment problem after running BedpostX')
 
 def check_target_labels(target_mask_im,atlas_labels):
-    '''If target_mask_im does not contain only the roi labels in list atlas_labels, raise a DiciphrException.'''
     logging.debug('diciphr.connectivity.check_target_labels')
     target_mask_uniq = np.unique(target_mask_im.get_fdata())
     labels_uniq = np.unique([0]+atlas_labels)
     if not (target_mask_uniq == labels_uniq).all():
-        raise DiciphrException('Target image labels do not match provided labels')
+        raise ValueError('Target image labels do not match provided labels')
     
 def convert_freesurfer_output_to_nifti_reference_t1(freesurfer_filename, reference_im):
     '''Convert the freesurfer output from mgz to nii.gz, and match the geometry of nifti reference_im, which should be the T1.
@@ -97,7 +97,7 @@ def convert_freesurfer_output_to_nifti_reference_t1(freesurfer_filename, referen
     '''
     logging.debug('diciphr.connectivity.convert_freesurfer_output_to_nifti')
     if not os.path.exists(freesurfer_filename):
-        raise DiciphrException('File does not exist {}'.format(freesurfer_filename))
+        raise FileNotFoundError(f'File not found {freesurfer_filename}')
     with TempDirManager(prefix='fs2nifti') as manager:
         tmpdir = manager.path()
         fs_nifti = os.path.join(tmpdir,'freesurfer_as_nifti.nii.gz')
@@ -142,7 +142,7 @@ def convert_freesurfer_to_nifti(freesurfer_filename, orn_string='LPS'):
     '''
     logging.debug('diciphr.connectivity.convert_freesurfer_to_nifti')
     if not os.path.exists(freesurfer_filename):
-        raise DiciphrException('File does not exist {}'.format(freesurfer_filename))
+        raise FileNotFoundError(f'File does not exist {freesurfer_filename}')
     with TempDirManager(prefix='fs2nifti') as manager:
         tmpdir = manager.path()
         fs_nifti = os.path.join(tmpdir,'nifti_lia.nii.gz')

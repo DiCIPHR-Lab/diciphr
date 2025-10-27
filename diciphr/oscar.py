@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
 plt.ioff()
 from diciphr.nifti_utils import read_nifti, reorient_nifti, nifti_image, multiply_images 
-from diciphr.utils import DiciphrException, ExecCommand
+from diciphr.utils import ExecCommand
 from math import ceil 
 
 DESCRIPTION = '''OSCAR - Utility to Overlay Statistical Content on Anatomical Reference '''
@@ -90,7 +90,7 @@ class Oscar(object):
                         else:
                             C = [-1*float(c), float(c)]
                 except:
-                    raise DiciphrException('Could not understand clim argument {}'.format(c))
+                    raise ValueError(f'Invalid clim argument {c}')
             self.clims.append(C)
             
     @staticmethod
@@ -131,7 +131,7 @@ class Oscar(object):
             data = np.flip(data, axis=1)
             data = np.flip(data, axis=0)
         else:
-            raise DiciphrException('Slice type keyword not recognized: {}'.format(slice_type))
+            raise ValueError(f'Invalid slice type keyword: {slice_type}')
         return data 
     
     @staticmethod
@@ -234,7 +234,7 @@ class Oscar(object):
         if len(slices) == 0:
             slices = self.calc_grid_slices(nrows, ncols, center, spacing)
         if slices[0] < 0 or slices[-1] > nz: 
-            raise DiciphrException(f'Grid out of range! nslices={nz} grid={slices}')
+            raise ValueError(f'Grid out of range! nslices={nz} grid={slices}')
         fig = plt.figure(figsize=self.figsize, dpi=self.dpi)
         grid = ImageGrid(fig, 111,
                 nrows_ncols=(nrows, ncols),
@@ -389,7 +389,6 @@ class Oscar(object):
         return '{0}.{1}'.format(output_filebase, self.file_format)
 
 ### OSCAR COMMAND LINE SCRIPT 
-
 def oscar_argparser():
     p = argparse.ArgumentParser(description=DESCRIPTION)
     p.add_argument('-o','--output',action='store',metavar='<outbase>',dest='output_filebase',
