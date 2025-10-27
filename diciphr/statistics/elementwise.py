@@ -9,7 +9,6 @@ from patsy import dmatrix
 from scipy.stats import mannwhitneyu, anderson, pearsonr, spearmanr
 from diciphr.nifti_utils import nifti_image
 from diciphr.statistics.stats_utils import fdr, filter_cohort
-from diciphr.utils import DiciphrException
 from diciphr.connectivity.connmat_utils import ut_to_square
     
 def assign_to_results(results, key, value, i, M, default=0.0):
@@ -61,7 +60,7 @@ def elementwise_ols(data, cohort, full_model, reduced_model=None, columns=None, 
     '''
     logging.debug('diciphr.statistics.elementwise.elementwise_ols')
     if cohort.shape[0] != data.shape[0]:
-        raise DiciphrException('Cohort shape does not match data shape in first dimension')
+        raise ValueError('Cohort shape does not match data shape in first dimension')
     M = data.shape[1]
     try:
         # convert a pandas DataFrame to numpy ndarray 

@@ -2,9 +2,7 @@ import logging
 import numpy as np
 import pandas as pd
 import patsy
-from diciphr.utils import DiciphrException, logical_or, logical_and, is_string, force_to_list
-
-class DiciphrStatsException(DiciphrException): pass
+from diciphr.utils import logical_or, logical_and, is_string, force_to_list
 
 def arrays_same_length(*args):
     a0=args[0]
