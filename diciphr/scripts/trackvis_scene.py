@@ -76,8 +76,11 @@ default_colors_dict['MCP'] = (255, 215, 0)  # Gold
 default_colors_dict['OR'] = (180, 0, 0)     # OR-L maroon 
 default_colors_dict['SLF'] = (255,102,204)  # SLF pink
 default_colors_dict['SLF1'] = (142,220,205) # SLF1-R blue-green
+default_colors_dict['SLF_1'] = (142,220,205) # SLF1-R blue-green
 default_colors_dict['SLF2'] = (160,0,160)   # SLF2-L purple
+default_colors_dict['SLF_2'] = (160,0,160)   # SLF2-L purple
 default_colors_dict['SLF3'] = (255,102,204) # SLF3-L pink
+default_colors_dict['SLF_3'] = (255,102,204) # SLF3-L pink
 default_colors_dict['UF'] = (128, 0, 255)   # Violet
 
 class ColorCycle:
@@ -132,11 +135,15 @@ def run_trackvis_scene(args):
     track_colors = [track_name_to_color(name, track_colors_dict) for name in track_names]
     
     for roi in rois:
-        logging.info("Copying regions of interest to output directory")
-        shutil.copyfile(roi, os.path.join(outdir, os.path.basename(roi)))
+        dst = os.path.join(outdir, os.path.basename(roi))
+        if not os.path.exists(dst):
+            logging.info("Copying region of interest to output directory")
+            shutil.copyfile(roi, dst)
     for underlay in underlays:
-        logging.info("Copying underlay images to output directory")
-        shutil.copyfile(underlay, os.path.join(outdir, os.path.basename(underlay)))
+        dst = os.path.join(outdir, os.path.basename(underlay))
+        if not os.path.exists(dst):
+            logging.info("Copying underlay image to output directory")
+            shutil.copyfile(underlay, dst)
     
     sfts = []
     for trkfile in trkfiles:

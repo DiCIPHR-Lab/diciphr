@@ -68,13 +68,13 @@ def buildArgsParser():
                     )
     
     g_dn = p.add_argument_group('Denoising options')
-    g_dn.add_argument('--no-denoise', action='store_false', dest='denoise',
+    g_dn.add_argument('-N', '--no-denoise', action='store_false', dest='denoise',
                     help='Skip MPPCA denoising'
                     )
     g_dn.add_argument('-G', '--gibbs', action='store_true', dest='gibbs',
                     help='Run Gibbs unringing on the data (default: False)'
                     )
-    g_dn.add_argument('--acquisition-slice', action='store', dest='acquisition_slicetype', 
+    g_dn.add_argument('-l', '--acquisition-slice', action='store', dest='acquisition_slicetype', 
                     required=False, default='axial', 
                     help='The acquisition slice, one of axial (default), sagittal, coronal. Used for Gibbs unringing.'
                     )
@@ -319,7 +319,10 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[],
             logging.info("Get acquisition parameters without .json files")
         all_acqparams = [prepare_acqparams_nojson(readout_time, phase_enc) for phase_enc in phase_encs]
         logging.debug(f'all_acqparams: {all_acqparams}')
-        
+    if len(phase_encs) == 0:
+        if run_synb0 or t1:
+            raise ValueError('To run synb0 or register T1 image, phase encoding direction must be provided by .json file or by -P argument')        
+    
     # Array of which DWI images to keep in output 
     keep_dwis = [len(bval[bval>0])>=6 and len(bval[bval==0])>=1 for bval in bval_arrays]
     for fn, k in zip(dwi_filenames, keep_dwis):
