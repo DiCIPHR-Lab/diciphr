@@ -70,7 +70,10 @@ def run_roi_stats(args):
         roi_template = 'r{0:0' + str(maxroi) +'d}_{1}'
         roi_names = [roi_template.format(i,n) for i,n in zip(lut[lblcol], lut[namecol])]
         labels = list(lut[lblcol])
-    cohort = pd.DataFrame(index = [a.strip() for a in open(args.subjectfile, 'r').readlines()])
+    if os.path.exists(args.subjectfile):
+        cohort = pd.DataFrame(index = [a.strip() for a in open(args.subjectfile, 'r').readlines()])
+    else:
+        cohort = pd.DataFrame(index=[args.subjectfile])
     logging.info('Read subject IDs, n = {0}'.format(len(cohort)))
     logging.info('Scalar filename template: '+args.filename_template)
     logging.info('Scalar atlas template: '+args.atlas_template)
