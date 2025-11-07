@@ -352,7 +352,7 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[],
         unwarped_b0_im = read_nifti(topup+'_b0u.nii.gz')
         if len(unwarped_b0_im.shape) == 4:
             unwarped_b0_im = split_image(unwarped_b0_im)[0]
-    elif unique_acqparams(all_acqparams) == 1 and len(dwi_ims) > 1:
+    elif unique_acqparams(all_acqparams) == 1:
         # When there is only one group of phase encoding directions, but multiple DWI images, concatenate them BEFORE denoising
         dwi_ims, bval_arrays, bvec_arrays = [[x] for x in concatenate_dwis(*zip(dwi_ims, bval_arrays, bvec_arrays))]
         keep_dwis = [True]
