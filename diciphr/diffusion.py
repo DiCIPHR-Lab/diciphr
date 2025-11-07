@@ -11,8 +11,8 @@ from dipy.denoise.pca_noise_estimate import pca_noise_estimate
 from dipy.denoise.gibbs import gibbs_removal
 from diciphr.utils import ( make_dir, force_to_list, read_json_file, 
                 TempDirManager, ExecCommand, ExecFSLCommand )
-from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, write_dwi,
-                erode_image, check_affines_and_shapes_match, is_valid_dwi, 
+from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, read_dwi, 
+                write_dwi, erode_image, check_affines_and_shapes_match, is_valid_dwi, 
                 mask_nifti, apply_mask_to_image, threshold_image, split_image, 
                 crop_pad_image, resample_image, smooth_image, concatenate_niftis )
 
