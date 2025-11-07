@@ -366,6 +366,8 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[],
             run_topup_post_synb0(dwi_ims[0], bval_arrays[0], bvec_arrays[0], synb0_img, all_acqparams[0], 
                 topup_base)
             topup = topup_base
+            acqparams = topup+'_acqparams.txt'
+            unwarped_b0_im = apply_topup(extract_b0(dwi_ims[0], bval_arrays[0], first=True), topup, acqparams)
         
     # 4. Denoising
     if denoise:
