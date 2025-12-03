@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
 plt.ioff()
-from diciphr.nifti_utils import read_nifti, reorient_nifti, nifti_image, multiply_images 
+from diciphr.nifti_utils import read_nifti, reorient_nifti, nifti_image, multiply_images
 from diciphr.utils import ExecCommand
 from math import ceil 
 
@@ -24,18 +24,74 @@ def absolute_threshold_image(nifti_img, threshold=0.0):
     data[np.abs(data)<threshold] = 0 
     return nifti_image(data, nifti_img.affine)
 
+def automatic_grid(nifti_img, slice_type, grid_x, grid_y):
+    # get slices automatically to cover brain in a skull-stripping input image 
+    # compute cropping bounds 
+    mask = (nifti_img.get_fdata() > 0)
+    trim_fraction = 0.01 
+    coords = np.argwhere(mask)
+    if slice_type.lower().startswith('s'):
+        axis = 0 
+    elif slice_type.lower().startswith('c'):
+        axis = 1 
+    elif slice_type.lower().startswith('a'):
+        axis = 2 
+    else:
+        raise ValueError(f'Unrecognized slice_type {slice_type}')
+    # Sort coordinates along each axis
+    inds_sorted = np.sort(coords[:, axis])  # x-axis
+    n = len(coords)
+    trim_count = int(n * trim_fraction)
+    v1 = inds_sorted[trim_count]
+    v2 = inds_sorted[-trim_count - 1]
+    n_grid = grid_x * grid_y 
+    return list(np.round(np.linspace(v1, v2, n_grid)).astype(int))
+    
+def resample_to_nearest_isotropic(nifti_img):
+    # Get original voxel sizes
+    native = tuple(nifti_img.header.get_zooms()[:3])
+    score = max(native) - min(native)
+    best_combo = (1, 1, 1)
+    best_res = native
+    # Candidate upsampling factors
+    combos = [(1, 1, 2), (1, 2, 1), (1, 2, 2),
+              (2, 1, 1), (2, 1, 2), (2, 2, 1)]
+    for combo in combos:
+        new_sizes = tuple(n / c for n, c in zip(native, combo))
+        new_score = max(new_sizes) - min(new_sizes)
+        if new_score < score:
+            score = new_score
+            best_combo = combo
+            best_res = new_sizes
+    if best_combo == (1, 1, 1):
+        return nifti_img  # Already best isotropy
+    print(f"Upsampling to resolution: {best_res}")
+    # Perform nearest-neighbor upsampling
+    data = nifti_img.get_fdata()
+    upsampled = np.repeat(data, best_combo[0], axis=0)
+    upsampled = np.repeat(upsampled, best_combo[1], axis=1)
+    upsampled = np.repeat(upsampled, best_combo[2], axis=2)
+    # Create new affine: scale voxel sizes accordingly
+    affine = nifti_img.affine.copy()
+    for i in range(3):
+        affine[i, i] /= best_combo[i]
+    new_img = nifti_image(upsampled, affine)
+    return new_img
+
 class Oscar(object):
     def __init__(self, underlay_img, overlay_imgs=[], **kwargs):
-        self.underlay_img = underlay_img
+        self.underlay_img = resample_to_nearest_isotropic(underlay_img)
         self.affine = underlay_img.affine
-        self.overlay_imgs = overlay_imgs
+        self.overlay_imgs = [resample_to_nearest_isotropic(img) for img in overlay_imgs]
         self.N = len(self.overlay_imgs)
         self.bgcolor = kwargs.get('bgcolor','w')
         self.clim_args = kwargs.get('clims',['1.0'])
         self.cmaps = kwargs.get('cmaps',['jet'])
         self.olay_alphas = kwargs.get('olay_alphas', [1.0])
         self.ulay_alpha = kwargs.get('ulay_alpha',0.7)
-        self.vmax = kwargs.get('vmax',1.0)*np.max(underlay_img.get_fdata())
+        ulay_data = underlay_img.get_fdata()
+        self.vmin = min(np.percentile(ulay_data[ulay_data!=0],0.5),0)
+        self.vmax = kwargs.get('vmax',1.0)*np.percentile(ulay_data[ulay_data!=0],99.5)
         self.show_colorbar = kwargs.get('show_colorbar',True)
         file_format = kwargs.get('file_format','png')
         self.figsize = kwargs.get('figsize', [6.,4.])
@@ -162,10 +218,15 @@ class Oscar(object):
         overlay_datas = [self.get_slice_data(o_img, slice_type) for o_img in self.overlay_imgs]
         self.plot_slice(axis, slice_number, underlay_data, overlay_datas, cmaps, clims, olay_alphas)
         
-    def plot_slice(self, ax, slice, underlay_data, overlay_datas=[], cmaps=None, clims=None, olay_alphas=None):
+    def plot_slice(self, ax, slice, underlay_data, overlay_datas=[], cmaps=None, 
+                   clims=None, olay_alphas=None, vmax=None, vmin=None):
+        if vmax is None:
+            vmax = self.vmax
+        if vmin is None:
+            vmin = self.vmin 
         ax.set_axis_off()
         p = ax.imshow(underlay_data[:,:,slice].T, cmap='gray', interpolation='none', 
-                    origin='upper', vmax=self.vmax, vmin=underlay_data.min(), 
+                    origin='upper', vmax=vmax, vmin=vmin, 
                     zorder=1, alpha=self.ulay_alpha)
         if len(overlay_datas) > 0:
             if cmaps is None:
@@ -374,7 +435,9 @@ class Oscar(object):
             data = self.get_slice_data(img, slice_type)
             ax = grid[i]
             ax.set_facecolor(self.bgcolor)
-            self.plot_slice(ax, slice_number, data)
+            vmin_ = 0 
+            vmax_ = np.percentile(data[data!=0],99.5)
+            self.plot_slice(ax, slice_number, data, vmin=vmin_, vmax=vmax_)
         if title:
             title_obj = fig.suptitle(title, fontsize=16)
             if self.bgcolor.startswith('w'):       
@@ -403,7 +466,7 @@ def oscar_argparser():
                     type=str, required=False, default=[],
                     help='An overlay image in Nifti format. Can be used more than once'
                     )
-    p.add_argument('-c','--colormap',action='append',metavar='<cmap>',dest='cmaps',
+    p.add_argument('-c','--cmap',action='append',metavar='<cmap>',dest='cmaps',
                     type=str, required=False, default=[],
                     help='Provide a pyplot colormap for the overlay. Can be used more than once'
                     )
@@ -424,8 +487,10 @@ def oscar_argparser():
                     help='Grid parameters, a space separated list of 4 values: nrows ncolumns center spacing. If 2 numbers are provided, -n option must be used to provide nrows x ncolumns values'
                     )                
     p.add_argument('--grid-view', action='store_true', dest='grid_view', 
-                    required=False, default=False, 
                     help='Also save 3 views of the slices of your grid.'
+                    )
+    p.add_argument('--auto-grid', action='store_true', dest='auto_grid', 
+                    help='Automatically determine a viewing grid (use -g to define size) from a skull-stripped background image'
                     )
     p.add_argument('-r','--framerate', action='store', metavar='<int>', dest='framerate',
                     required=False, default=5,
@@ -456,8 +521,8 @@ def oscar_argparser():
                     help='DPI of the figure. Default is 300'
                     )
     p.add_argument('-v', '--vmax', action='store', dest='vmax', metavar='<float>', 
-                    required=False, type=float, default=0.5, 
-                    help='Used to scale intensity of the underlay. Higher = darker. Default is 0.5'
+                    required=False, type=float, default=1.0, 
+                    help='Used to scale intensity of the underlay. Higher = darker. Default is 1.0'
                     )
     p.add_argument('-A', '--ulay-alpha', action='store', dest='ulay_alpha', metavar='<float>', 
                     required=False, type=float, default=1.0, 
@@ -485,6 +550,7 @@ def run_oscar_commandline(args):
     output_dir = os.path.dirname(output_filebase)
     slice_type = args.slice_type
     slice_number = args.slice_number
+    auto_grid = args.auto_grid
     cleanup = args.cleanup
     grid = args.grid
     
@@ -544,28 +610,26 @@ def run_oscar_commandline(args):
         if grid:
             print("Create a grid of slices")
             ulay_center=None
-            # if len(underlay_img.shape) > 3:
-                # raise ValueError('Cannot produce a grid on a 4D underlay')
             if len(grid) == 4:
                 nrows, ncols, center, spacing = grid
                 slice_list = []
-            else:
-                if len(grid) == 3:
-                    ulay_center = grid[2]
-                if len(grid) <= 3:
-                    nrows, ncols = grid[:2]
-                    slice_list = slice_number
-                    spacing=1
-                    # if len(slice_list) != nrows * ncols:
-                        # raise ValueError('Length of slice_number must match nrows * ncols')
+            elif len(grid) <= 2:
+                nrows, ncols = grid[:2]
+                if auto_grid:
+                    slice_list = automatic_grid(underlay_img, slice_type, nrows, ncols)
                 else:
-                    raise ValueError('Improper number of grid arguments')
+                    slice_list = slice_number
+                spacing=1
+                if len(slice_list) != nrows * ncols:
+                    raise ValueError('Length of slice_number must match nrows * ncols')
+            else:
+                raise ValueError('Improper number of grid arguments')
             if slice_type.lower() in ['sagittal','sag','s']:
                 if center:
                     center = underlay_img.shape[0] - center
                 if slice_list:
                     slice_list = sorted([underlay_img.shape[0] - s  for s in slice_list])
-            
+            print(f'slice_list: {slice_list}')
             myOscar.slice_grid(slice_type, output_filebase=output_filebase, slices=slice_list,
                         nrows=nrows, ncols=ncols, center=center, spacing=spacing, title=args.title)    
             if args.grid_view:

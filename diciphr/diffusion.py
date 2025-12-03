@@ -922,20 +922,22 @@ def prepare_index(bval_arrays, keep_array, average_b0s=False):
         - If `average_b0s` is True, all b=0 values are assigned the same index.
         - If `average_b0s` is False, b=0 values are indexed by their order of appearance.
     """
-    index=[]
-    j=0
-    k=0
-    for keep, bvals in zip(keep_array, bval_arrays):
-        k+=1
+    def prep1array(bvals, keep, average_b0s, adj_value):
+        j=0 
+        ret=[]
         for b in np.asarray(bvals).flatten():
             if b == 0:
                 j+=1 
-            if j<1 or average_b0s:
-                if keep:
-                    index.append(k)
-            else:
-                if keep:
-                    index.append(j)
+            if average_b0s and keep:
+                ret.append(1 + adj_value)
+            elif keep:
+                ret.append(max(1, j) + adj_value)
+        return ret 
+    index=[]
+    adj_value = 0
+    for keep, bvals in zip(keep_array, bval_arrays):
+        index.extend(prep1array(bvals, keep, average_b0s, adj_value))
+        adj_value = np.max(index)
     return index 
 
 def pad_image_for_topup(nifti_img):
