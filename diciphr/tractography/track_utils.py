@@ -235,8 +235,8 @@ def downsample_tracks_fdc(trk_input, output_trk_filename=None, ref_filename=None
     best_h = 1
     best_sft = None
     logging.info(f'Subsampling {N} streamlines {num_iters} times at {downsample_percent}% to get {m} streamlines')
-    for iter in range(num_iters):
-        logging.debug(f'Iteration {iter + 1} of {num_iters}')
+    for i in range(num_iters):
+        logging.debug(f'Iteration {i+1} of {num_iters}')
         sampled_indices = np.random.choice(np.arange(N), size=m, replace=False, p=streamline_means)
         sampled_sft = sft[sampled_indices]
         sample_data = track_density_image(sampled_sft, ref_img=ref_img).get_fdata()
@@ -256,6 +256,49 @@ def downsample_tracks_fdc(trk_input, output_trk_filename=None, ref_filename=None
         return best_sft, streamline_means
     else:
         return best_sft
+
+def downsample_tracks_uniform(trk_input, output_trk_filename=None, ref_filename=None, 
+                              downsample_percent=50, num_iters=1, replace=False):
+    '''
+    Downsamples streamlines from a .trk file at random, with or without replacement.
+    
+    Parameters:
+    - trk_input: path to the .trk file or StatefulTractogram instance
+    - ref_filename: optional path to a NIfTI file to use as reference image
+    - downsample_percent: percentage of streamlines to retain
+    - num_iters: number of random subsampling iterations
+    - return_mean_densities: whether to return streamline density weights
+    '''
+    if ref_filename is not None:
+        logging.info(f'Reference nifti: {ref_filename}')
+        ref_img = read_nifti(ref_filename)
+    else:
+        ref_img = None
+    if isinstance(trk_input, StatefulTractogram):
+        sft = trk_input
+    else:
+        logging.info(f'Load trk file {trk_input}')
+        sft = load_trk(trk_input, reference=ref_img if ref_img else 'same')     
+    N = len(sft.streamlines)
+    m = int(float(downsample_percent) / 100 * N)
+    sampled_sfts=[]
+    logging.info(f'Subsampling {N} streamlines {num_iters} times at {downsample_percent}% to get {m} streamlines')
+    for i in range(num_iters):
+        logging.debug(f'Iteration {i+1} of {num_iters}')
+        sampled_indices = np.random.choice(np.arange(N), size=m, replace=replace)
+        sampled_sfts.append(sft[sampled_indices])
+    # save results
+    if len(sampled_sfts) == 1:
+        if output_trk_filename is not None:
+            logging.info(f"Save results to {output_trk_filename}")
+            save_trk(sampled_sfts[0], output_trk_filename)
+        return sampled_sfts[0]
+    else:
+        if output_trk_filename is not None:
+            logging.info("Save results to "+output_trk_filename+"_{i}.trk")
+            for i in range(num_iters):
+                save_trk(sampled_sfts[i], output_trk_filename+"_{0}.trk".format(i))
+        return tuple(sampled_sfts)
 
 ###################################   
 ###  TRACKVIS MERGE AND SCENE   ###
