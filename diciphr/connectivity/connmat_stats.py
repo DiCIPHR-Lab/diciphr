@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
-import os, sys, shutil, logging
+import sys, logging
 import numpy as np
+import pandas as pd
 from collections import OrderedDict
 from scipy.stats import mannwhitneyu, ttest_ind, norm, gamma
-from diciphr.statistics.utils import fdr, dmatrix
+from diciphr.statistics.stats_utils import fdr, dmatrix
 from connmat_utils import symmetric_mat_from_upper_mask
 
 ##########################
@@ -27,7 +28,7 @@ def sample_edge_distribution(mat_array, i_index, j_index, show=False, roi_names=
     elif pdf == 'gamma':
         alpha, loc, beta = gamma.fit(edges)
         p = gamma.pdf(x, alpha, loc, beta)
-    ax = plt.plot(x,p,'r-')
+    plt.plot(x,p,'r-')
     if roi_names:
         plt.title('({0} - {1})'.format(roi_names[i_index],roi_names[j_index]), fontsize=8)
     else:
@@ -46,7 +47,7 @@ def sample_edge_distribution(mat_array, i_index, j_index, show=False, roi_names=
 def connmat_edge_distribution(mat, thresh_low=0, thresh_high=None, log_scale=False, show=False):
     import matplotlib.pyplot as plt
     edges = mat.copy()[np.triu_indices(mat.shape[0],1)]
-    num_edges = edges.size
+    #num_edges = edges.size
     edges = edges[edges>thresh_low]
     if thresh_high:
         edges = edges[edges<thresh_high]
@@ -69,20 +70,20 @@ def connmat_edge_distribution(mat, thresh_low=0, thresh_high=None, log_scale=Fal
 ### Edgewise Statistics ###
 ###########################
 class EdgewiseResultsContainer(object):
-    def __init__(*kwargs):
+    def __init__(self, *kwargs):
         self.data = OrderedDict()
         for key, value in kwargs.items():
             if key == 'upper_triangular_mask':
-                self.upper_triangular_mask = upper_triangular_mask.copy()
+                self.upper_triangular_mask = value.copy()
             else:
                 self.data[key] = value
             
-    def set_edge_value(key, edges, upper_triangular_mask=None, fill_value=0.0):
+    def set_edge_value(self, key, edges, upper_triangular_mask=None, fill_value=0.0):
         if upper_triangular_mask:
             edges = symmetric_mat_from_upper_mask(edges, upper_triangular_mask, fill_value=fill_value)
         self.data[key] = edges
         
-    def threshold_edge_value(key, edges, threshold_value, threshold_edges=None, upper_triangular_mask=None, fill_value=0.0, absvalue=True):
+    def threshold_edge_value(self, key, edges, threshold_value, threshold_edges=None, upper_triangular_mask=None, fill_value=0.0, absvalue=True):
         if upper_triangular_mask:
             edges = symmetric_mat_from_upper_mask(edges, upper_triangular_mask, fill_value=fill_value)
         if threshold_edges is None:
@@ -227,7 +228,7 @@ def edgewise_mannwhitneyu(edges_sample_array, upper_triangular_mask, groups):
         data0 = edge_sample[groups == 0]
         data1 = edge_sample[groups == 1]
         u_1, p_1 = mannwhitneyu(data0,data1,alternative='two-sided')
-        sign = np.sign(np.median(data1) - np.median(data0)) 
+        # sign = np.sign(np.median(data1) - np.median(data0)) 
         # rank-biserial correlation
         e_1 = 1 - ((2*u_1)/float(data0.size * data1.size))
         uvals[i] = u_1
@@ -268,7 +269,7 @@ def edgewise_ttest(edges_sample_array, upper_triangular_mask, groups):
         data1 = edge_sample[groups == 1]
         n = len(groups)
         t_1, p_1 = ttest_ind(data0,data1,equal_var=True)
-        sign = np.sign(np.median(data1) - np.median(data0)) 
+        # sign = np.sign(np.median(data1) - np.median(data0)) 
         # rank-biserial correlation
         d_1 = 2*t_1/np.sqrt(n-1)
         tvals[i] = t_1
