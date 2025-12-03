@@ -4,10 +4,9 @@ import os, sys
 import re 
 import pandas as pd
 import numpy as np 
-import nibabel as nib
 import patsy 
 import logging
-from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.utils import protocol_logging, DiciphrArgumentParser
 from diciphr.statistics.harmonization import combat, covbat
 from diciphr.nifti_utils import ( nifti_image, read_nifti, 
             strip_ext, strip_nifti_ext, get_nifti_ext )
@@ -106,12 +105,21 @@ def split_formula(formula):
 def prepare_cohort(cohortcsv, site, formula, na_values = ['.','NAN','NaN','nan','Nan','NA','na','n/a','N/A',' ']):
     # Read cohort, grab only columns needed, remove any missing data
     cohort = pd.read_csv(cohortcsv, na_values=na_values)
+    logging.debug(f'cohort.shape: {cohort.shape}')
     cohort = cohort.set_index(cohort.columns[0])
     covariates = split_formula(formula)
+    logging.debug(f'covariates: {covariates}')
     if site in covariates:
         raise ValueError('Site column ({0}) cannot be in covariate formula'.format(site))
-    cohort = cohort[[site]+covariates]
+    try:
+        columns_ = [site]+covariates
+        cohort = cohort[columns_]
+    except KeyError:
+        logging.error(f'One or more formula variables {columns_} not found among cohort columns {cohort.columns}')
+        
+        raise 
     cohort = cohort.dropna()
+    logging.debug(f'cohort.shape after drop NAs: {cohort.shape}')
     return cohort 
     
 def covbat_post_niftis(harmonized_data, cohort, mask_img, filename_template):
@@ -165,7 +173,6 @@ def main(argv):
         logging.info("Write results to Niftis ")
         covbat_post_niftis(harmonized_data, cohort, mask_img, os.path.join(args.outdir, args.out_template))
     else:
-        # covbat_df = pd.DataFrame(harmonized_data.T, index=cohort.index, columns=rois)
         harmonized_data.transpose().to_csv(os.path.join(args.outdir, args.out_template), index=True, index_label='Subject')
         np.savetxt("{0}/gamma_hat.csv".format(args.outdir),gamma_hat,delimiter=',')
         np.savetxt("{0}/gamma_star.csv".format(args.outdir),gamma_star,delimiter=',')

@@ -7,7 +7,7 @@ import pandas as pd
 import pickle 
 from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.statistics.elementwise import elementwise_ols, results_to_dataframe
-from diciphr.statistics.utils import filter_cohort
+from diciphr.statistics.stats_utils import filter_cohort
 from diciphr.nifti_utils import replace_labels, read_nifti, write_nifti
 from diciphr.oscar import Oscar 
     
@@ -67,8 +67,8 @@ def buildArgsParser():
                     type=str, required=False, default=None, 
                     help='A nifti file for underlay in screenshots of results.'
                     )
-    p.add_argument('--slicetype', action='store', metavar='str',dest='slicetype',
-                    type=str, required=False, default='c', 
+    p.add_argument('-s', '--slicetype', action='store', metavar='str',dest='slicetype',
+                    type=str, required=False, default=['a'], nargs="*", 
                     help='Slice type for screenshots. Options: a/c/s/axial/coronal/sagittal'
                     ) 
     return p
@@ -99,9 +99,11 @@ class OLSAnalysis():
         self._intersect_data_cohort() 
     
     def _intersect_data_cohort(self):
-        _formula_names = list(filter(lambda c: bool(c), re.split('\)|\(|\+|\*|\:|\ ', self.formula1)))
-        _filter_names = [re.split('\=|\>|\<', f.replace(' ',''))[0] for f in self.filters]
-        self.exogs = list(set(_formula_names + _filter_names))
+        formula_names = list(filter(lambda c: bool(c), re.split('\)|\(|\+|\*|\:|\ ', self.formula1)))
+        filter_names = [re.split('\=|\>|\<|\!', f.replace(' ',''))[0] for f in self.filters]
+        logging.debug(f"formula_names: {formula_names}")
+        logging.debug(f"filter_names: {filter_names}")
+        self.exogs = list(set(formula_names + filter_names))
         c = self.cohort[self.exogs]
         d = self.data[self.features]
         cin = c.index.name
@@ -187,14 +189,19 @@ class OLSAnalysis():
         values *= pvals
         return replace_labels(self.atlas, self.labels, values)
     
-    def write_nifti_outputs(self, outdir):
+    def write_nifti_outputs(self, outdir, coeffs=False, tstats=False):
         filenames = [] 
         if self.atlas is not None:
-            for c in self.get_coeff_names():
-                cr = c.replace(':','-x-')
-                write_nifti(os.path.join(outdir, cr+'.nii.gz'), self.get_nifti_result(c))
-                filenames.append(os.path.join(outdir, cr+'.nii.gz'))
-            for c in self.get_cohensd_names() + self.get_beta_names() + self.get_tstat_names() + self.get_model_names():
+            if coeffs:
+                for c in self.get_coeff_names():
+                    cr = c.replace(':','-x-')
+                    write_nifti(os.path.join(outdir, cr+'.nii.gz'), self.get_nifti_result(c))
+                    filenames.append(os.path.join(outdir, cr+'.nii.gz'))
+            if tstats:
+                names_list = self.get_cohensd_names() + self.get_beta_names() + self.get_tstat_names() + self.get_model_names()    
+            else:
+                names_list = self.get_cohensd_names() + self.get_beta_names() + self.get_model_names()    
+            for c in names_list:
                 cr = c.replace(':','-x-')
                 write_nifti(os.path.join(outdir, cr+'.nii.gz'), self.get_nifti_result(c))    
                 write_nifti(os.path.join(outdir, cr+'_trendP.nii.gz'), self.get_nifti_result(c, sig='trendP'))    
@@ -221,21 +228,21 @@ def oscarOutputs(filenames, atlas_img, underlay_img, slicetype, outdir):
         except IndexError:
             m = 1 
         if filebase.startswith('t_'):
-            clims = ['-9,9']
-            cmap = 'jet'
+            clims = ['-6,6']
+            cmaps = ['bwr']
         elif filebase.startswith('d_') or filebase.startswith('b_'):
-            clims = ['-1,1']
-            cmap = 'jet'
+            clims = ['-0.8,0.8']
+            cmaps = ['bwr']
         elif filebase.startswith('f_'):
             clims = ['0,{0:0.1f}'.format(m)]
-            cmap = 'viridis'
+            cmaps = ['viridis']
         elif filebase.startswith('R2'):
             clims = ['0,1']
-            cmap = 'viridis'
+            cmaps = ['viridis']
         else:
             clims = ['-{0:0.1f},{0:0.1f}'.format(m)]
-            cmap = 'jet'
-        O = Oscar(underlay_img, [read_nifti(fn)], clims=clims, cmap=cmap, bgcolor='k')
+            cmaps = ['jet']
+        O = Oscar(underlay_img, [read_nifti(fn)], clims=clims, cmaps=cmaps, bgcolor='k')
         # get best slices 
         sliceindexdict={'a':2, 'c':1, 's':0}
         sliceindex = sliceindexdict[slicetype]
@@ -266,10 +273,12 @@ def main(argv):
                 underlay_img = read_nifti(args.underlayfile)
             else:
                 underlay_img = atlas_img 
-            if args.slicetype[0].lower() in ['a','c','s']:
-                slicetype = args.slicetype[0].lower()
-            else:
-                raise ValueError('Invalid option to --slicetype')
+            slicetypes = []
+            for slicetype in args.slicetype:
+                if slicetype[0].lower() in ['a','c','s']:
+                    slicetypes.append(slicetype[0].lower())
+                else:
+                    raise ValueError('Invalid option to --slicetype')
         else:
             atlas_img = None
         treatments = dict([s.split('=') for s in args.treatments])
@@ -301,7 +310,8 @@ def main(argv):
             filenames = A.write_nifti_outputs(args.outdir)
             
             logging.info('Oscar Nifti screenshots')
-            oscarOutputs(filenames, atlas_img, underlay_img, slicetype, args.outdir)
+            for slicetype in slicetypes:
+                oscarOutputs(filenames, atlas_img, underlay_img, slicetype, args.outdir)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise                      

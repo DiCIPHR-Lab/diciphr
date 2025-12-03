@@ -3,7 +3,7 @@
 import os, sys, logging
 from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.nifti_utils import read_nifti
-from diciphr.tractography.track_utils import downsample_tracks
+from diciphr.tractography.track_utils import downsample_tracks_fdc
 from dipy.io.streamline import load_trk, save_trk
 from dipy.io.stateful_tractogram import Space, StatefulTractogram
 
@@ -55,7 +55,7 @@ def main(argv):
         logging.info('Reading track file {}'.format(input_trk))
         tractogram = load_trk(input_trk, ref_im)
         streams = tractogram.get_streamlines_copy()
-        streams_downsampled = downsample_tracks(streams, ref_im, 
+        streams_downsampled = downsample_tracks_fdc(streams, ref_im, 
                         downsample_percent=downsample_percent,
                         num_iters=num_iters)
         logging.info('Write to output {}'.format(output_trk))

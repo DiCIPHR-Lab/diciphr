@@ -3,7 +3,7 @@
 import os, sys, logging
 from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 from diciphr.nifti_utils import read_dwi, json_files_from_niftis
-from diciphr.diffusion import round_bvals, run_topup, most_gradients_pe, prepare_acqparams_json, prepare_acqparams_nojson
+from diciphr.diffusion import round_bvals, run_topup, prepare_acqparams_json, prepare_acqparams_nojson
 
 DESCRIPTION = '''
     Run topup on DWI files.

@@ -1,10 +1,9 @@
 #! /usr/bin/env python
 
-import os, sys, logging
+import sys, logging
 from diciphr.statistics.zscores import corrected_zscores
-from diciphr.statistics.utils import filter_cohort
+from diciphr.statistics.stats_utils import filter_cohort
 from diciphr.utils import DiciphrArgumentParser
-import numpy as np
 import pandas as pd 
 
 DESCRIPTION = '''
