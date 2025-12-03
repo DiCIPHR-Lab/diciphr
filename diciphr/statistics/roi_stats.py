@@ -2,7 +2,6 @@
 
 import logging
 import numpy as np
-import nibabel as nib
 import pandas as pd
 from diciphr.utils import is_string
 from diciphr.nifti_utils import read_nifti 
@@ -21,6 +20,7 @@ def scalar_roi_stats(scalar_im, atlas_im, measures=['mean','median','std','volum
         mask = atlas_data > 0
     if nonzero:
         mask = np.logical_and(mask, scalar_data != 0)        
+    mask = np.logical_and(mask, np.isfinite(scalar_data))
     scalar_data = scalar_data.astype(np.float32)[mask]
     scalar_means = np.zeros(num_labels,)
     scalar_stds = np.zeros(num_labels,)

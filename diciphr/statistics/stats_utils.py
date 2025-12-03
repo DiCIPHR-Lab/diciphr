@@ -2,6 +2,8 @@ import logging
 import numpy as np
 import pandas as pd
 import patsy
+import matplotlib as mpl 
+import matplotlib.pyplot as plt
 from diciphr.utils import logical_or, logical_and, is_string, force_to_list
 
 def arrays_same_length(*args):
@@ -33,7 +35,7 @@ def is_numpy_array(a):
         
 def filter_cohort(cohort, expression, data=None):
     ''' Filter a cohort by an expression, e.g. Age>20 '''
-    logging.debug("diciphr.statistics.utils.filter_cohort")
+    logging.debug("diciphr.statistics.stats_utils.filter_cohort")
     selected = np.array([True for i in range(len(cohort.index))])
     if '=' in expression:
         col, vals = expression.split('=')
@@ -66,7 +68,7 @@ def filter_cohort(cohort, expression, data=None):
         
 # def make_design(cohort, formula, filename_template='', centralize=[], filter=[]):
 def make_design(cohort, formula, centralize=[], filter=[], treatments={}, intercept=False):
-    logging.debug("diciphr.statistics.utils.make_design")
+    logging.debug("diciphr.statistics.stats_utils.make_design")
     logging.info("Dataframe has {} entries.".format(len(cohort)))
     # User defined filters
     centralize = force_to_list(centralize)
@@ -223,7 +225,6 @@ def ICC_rep_anova(Y):
     
 def standalone_colorbar(cmap='seismic', clims=[-1,1], orientation='horizontal', length=1, aspect=4, dpi=600):
     # Create a standalone colorbar inside a figure. 
-    import matplotlib.pyplot as plt
     if orientation.lower() == 'horizontal':
         figsize=(length, length/aspect)
         adjust_kw={'bottom':0.5}
