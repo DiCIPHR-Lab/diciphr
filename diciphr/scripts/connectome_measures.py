@@ -2,14 +2,17 @@
 
 import os, sys, logging
 from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
-from diciphr.connectivity.connmat_utils import read_connmat, density, nodestrength, degree, prune_mat
+from diciphr.connectivity.connmat_utils import ( read_connmat, density, 
+                    log_scale_mat, nodestrength, degree, prune_mat )
 from diciphr.connectivity.topology import ( efficiency_bin, efficiency_wei,
                     betweenness_bin, betweenness_wei, 
                     assortativity_bin, assortativity_wei,
                     transitivity_bin, transitivity_wei,
                     pathlength_wei, pathlength_bin,
-                    modularity_louvain_wei, modularity_louvain_bin )
+                    modularity_louvain_wei, modularity_louvain_bin,
+                    interhemispheric_strength, intrahemispheric_strength )
 import pandas as pd
+import numpy as np 
 from glob import glob 
 
 DESCRIPTION = '''
@@ -39,19 +42,25 @@ def buildArgsParser():
                     type=float, required=False, default=[100], nargs="*", 
                     help='A list of target densities, between 0 and 100, separated by spaces, to prune the connectomes to before computing stats. Default is [100] which will not prune the mats.'
                     )
+    p.add_argument('--log', action='store_true', dest='log_scale', 
+                   help='Apply log scaling to connectomes before calculating measures'
+                   )
+    p.add_argument('--max', action='store', dest='max_value', 
+                   default=None, help='Normalize mats by this global max value'
+                   )
     p.add_argument('-L', '--local', action='store_true', dest='local_only', 
-                    required=False, default=False, help='If provided, compute only the local measures.'
+                    required=False, help='If provided, compute only the local measures.'
                     )
     p.add_argument('-G', '--global', action='store_true', dest='global_only',
-                    required=False, default=False, help='If provided, compute only the global measures.'
+                    required=False, help='If provided, compute only the global measures.'
                     )
     p.add_argument('-B', '--binary', action='store_true', dest='binary_only', 
-                    required=False, default=False, help='If provided, compute only the binary measures.'
+                    required=False, help='If provided, compute only the binary measures.'
                     )
     p.add_argument('-W', '--weighted', action='store_true', dest='weighted_only',
-                    required=False, default=False, help='If provided, compute only the weighted measures.'
+                    required=False, help='If provided, compute only the weighted measures.'
                     )
-    p.add_argument('-n', '--nodes', action='store_true', dest='nodes', 
+    p.add_argument('-n', '--nodes', action='store', dest='nodes', 
                     required=False, default=None, help='A text file containing the list of node names.'
                     )
     return p
@@ -81,8 +90,15 @@ def main(argv):
             node_names = [ a.strip() for a in open(args.nodes, 'r').readlines() ][:n]
         else:
             node_names = None
+        mats = [ read_connmat(m) for m in matfiles ]
+        if args.log_scale:
+            max_value = args.max_value 
+            if max_value is None:
+                max_value = np.max(mats)
+            logging.info(f'Log scale matrices by formula log(1+A_ij)/log(1+max(A)) where max(A) across entire sample is {max_value}')
+            mats = [log_scale_mat(m, max_value=max_value) for m in mats]
         logging.info(f'Running connmat measures for {len(subjects)} subjects and {len(args.densities)} densities')
-        dfs = connmat_measures(matfiles, subjects, args.densities, 
+        dfs = connmat_measures(mats, subjects, args.densities, 
                     node_names=node_names, 
                     global_=not(args.local_only), local_=not(args.global_only),
                     binary=not(args.weighted_only), weighted=not(args.binary_only),
@@ -96,9 +112,8 @@ def main(argv):
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
     
-def connmat_measures(matfiles, subjects, densities, node_names=None, global_=True, local_=True, binary=True, weighted=True):
+def connmat_measures(mats, subjects, densities, node_names=None, global_=True, local_=True, binary=True, weighted=True):
     dfs = dict([ (d, pd.DataFrame(index=subjects)) for d in densities ])
-    mats = [ read_connmat(m) for m in matfiles ]
     if node_names is None:
         node_names = [f'node{i}' for i in range(len(mats[0]))]
     for d in densities:
@@ -112,17 +127,21 @@ def connmat_measures(matfiles, subjects, densities, node_names=None, global_=Tru
                 logging.info(f'Global measures: {i+1} out of {nsubjs}')
                 # efficiency, pathlength, assortativity, transitivity, modularity
                 if weighted:
-                    df.loc[s, 'Global-efficiency-wtd'] = efficiency_wei(m, local=False)
-                    df.loc[s, 'Global-charpath-wtd'] = pathlength_wei(m)
-                    df.loc[s, 'Global-assortativity-wtd'] = assortativity_wei(m)
-                    df.loc[s, 'Global-transitivity-wtd'] = transitivity_wei(m)
-                    df.loc[s, 'Global-modularity-wtd'] = modularity_louvain_wei(m)
+                    df.loc[s, 'Global_efficiency_wtd'] = efficiency_wei(m, local=False)
+                    df.loc[s, 'Global_charpath_wtd'] = pathlength_wei(m)
+                    df.loc[s, 'Global_assortativity_wtd'] = assortativity_wei(m)
+                    df.loc[s, 'Global_transitivity_wtd'] = transitivity_wei(m)
+                    df.loc[s, 'Global_modularity_wtd'] = modularity_louvain_wei(m)
+                    df.loc[s, 'Global_interhemispheric_wtd'] = interhemispheric_strength(m)
+                    df.loc[s, 'Global_intrahemispheric_wtd'] = intrahemispheric_strength(m)
                 if binary:
-                    df.loc[s, 'Global-efficiency-bin'] = efficiency_bin(m, local=False)
-                    df.loc[s, 'Global-charpath-bin'] = pathlength_bin(m)
-                    df.loc[s, 'Global-assortativity-bin'] = assortativity_bin(m)
-                    df.loc[s, 'Global-transitivity-bin'] = transitivity_bin(m)
-                    df.loc[s, 'Global-modularity-bin'] = modularity_louvain_bin(m)
+                    df.loc[s, 'Global_efficiency_bin'] = efficiency_bin(m, local=False)
+                    df.loc[s, 'Global_charpath_bin'] = pathlength_bin(m)
+                    df.loc[s, 'Global_assortativity_bin'] = assortativity_bin(m)
+                    df.loc[s, 'Global_transitivity_bin'] = transitivity_bin(m)
+                    df.loc[s, 'Global_modularity_bin'] = modularity_louvain_bin(m)
+                    df.loc[s, 'Global_interhemispheric_bin'] = interhemispheric_strength(m, binary=True)
+                    df.loc[s, 'Global_intrahemispheric_bin'] = intrahemispheric_strength(m, binary=True)
             if local_:
                 logging.info('Local measures: {} out of {}'.format(i+1, nsubjs))
                 # degree, nodestrength, efficiency, betweenness
