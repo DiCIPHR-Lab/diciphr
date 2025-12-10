@@ -1157,6 +1157,17 @@ def apply_topup(images, topup_prefix, acqparamstxt, index=None):
     images = force_to_list(images)
     if len(images) < 1:
         raise ValueError('No input images provided')
+    # check existence of topup files 
+    topup_field_prefix = topup_prefix+'_fieldcoef'
+    topup_field_file = None
+    for ext in ('nii.gz', 'nii'):
+        if os.path.exists(f'{topup_field_prefix}.{ext}'):
+            topup_field_file = f'{topup_field_prefix}.{ext}'
+    if topup_field_file is None:
+        raise ValueError('Topup fieldcoef file not found')
+    topup_movpar_file = topup_prefix+'_movpar.txt'
+    if not os.path.exists(topup_movpar_file):
+        raise ValueError('Topup movpar text file not found')
     if index is None:
         index = [1 for img in images]
     with TempDirManager(prefix='apply_topup') as manager:
@@ -1168,11 +1179,18 @@ def apply_topup(images, topup_prefix, acqparamstxt, index=None):
             outf = os.path.join(tmpdir, f"input{i}.nii.gz")
             write_nifti(outf, img)
             filenames.append(outf)
+        # copy provided acqparams file to outdir 
+        tmpacqparams = os.path.join(tmpdir, 'acqparams.txt')
+        shutil.copyfile(acqparamstxt, tmpacqparams)
+        # copy provided topup files to outdir 
+        tmp_topup_prefix = os.path.join(tmpdir, os.path.basename(topup_prefix))
+        shutil.copyfile(topup_movpar_file, os.path.join(tmpdir,os.path.basename(topup_movpar_file)))
+        shutil.copyfile(topup_field_file, os.path.join(tmpdir,os.path.basename(topup_field_file)))
         cmd = ['applytopup', 
                 '-i', ','.join(filenames), 
-                '-a', acqparamstxt, 
+                '-a', tmpacqparams, 
                 '-x', ','.join(map(str,index)), 
-                '-t', topup_prefix, 
+                '-t', tmp_topup_prefix, 
                 '-o', outputf,
                 '-m', 'jac']
         logging.info('Run applytopup')
