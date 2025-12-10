@@ -15,6 +15,7 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 plt.ioff()
 from diciphr.nifti_utils import read_nifti, reorient_nifti, nifti_image, multiply_images
 from diciphr.utils import ExecCommand
+from scipy.ndimage import center_of_mass 
 from math import ceil 
 
 DESCRIPTION = '''OSCAR - Utility to Overlay Statistical Content on Anatomical Reference '''
@@ -23,36 +24,12 @@ def absolute_threshold_image(nifti_img, threshold=0.0):
     data = nifti_img.get_fdata()
     data[np.abs(data)<threshold] = 0 
     return nifti_image(data, nifti_img.affine)
-
-def automatic_grid(nifti_img, slice_type, grid_x, grid_y):
-    # get slices automatically to cover brain in a skull-stripping input image 
-    # compute cropping bounds 
-    mask = (nifti_img.get_fdata() > 0)
-    trim_fraction = 0.01 
-    coords = np.argwhere(mask)
-    if slice_type.lower().startswith('s'):
-        axis = 0 
-    elif slice_type.lower().startswith('c'):
-        axis = 1 
-    elif slice_type.lower().startswith('a'):
-        axis = 2 
-    else:
-        raise ValueError(f'Unrecognized slice_type {slice_type}')
-    # Sort coordinates along each axis
-    inds_sorted = np.sort(coords[:, axis])  # x-axis
-    n = len(coords)
-    trim_count = int(n * trim_fraction)
-    v1 = inds_sorted[trim_count]
-    v2 = inds_sorted[-trim_count - 1]
-    n_grid = grid_x * grid_y 
-    return list(np.round(np.linspace(v1, v2, n_grid)).astype(int))
     
 def resample_to_nearest_isotropic(nifti_img):
     # Get original voxel sizes
     native = tuple(nifti_img.header.get_zooms()[:3])
     score = max(native) - min(native)
     best_combo = (1, 1, 1)
-    best_res = native
     # Candidate upsampling factors
     combos = [(1, 1, 2), (1, 2, 1), (1, 2, 2),
               (2, 1, 1), (2, 1, 2), (2, 2, 1)]
@@ -62,10 +39,8 @@ def resample_to_nearest_isotropic(nifti_img):
         if new_score < score:
             score = new_score
             best_combo = combo
-            best_res = new_sizes
     if best_combo == (1, 1, 1):
         return nifti_img  # Already best isotropy
-    print(f"Upsampling to resolution: {best_res}")
     # Perform nearest-neighbor upsampling
     data = nifti_img.get_fdata()
     upsampled = np.repeat(data, best_combo[0], axis=0)
@@ -83,6 +58,10 @@ class Oscar(object):
         self.underlay_img = resample_to_nearest_isotropic(underlay_img)
         self.affine = underlay_img.affine
         self.overlay_imgs = [resample_to_nearest_isotropic(img) for img in overlay_imgs]
+        if kwargs.get('fgmask', None):
+            self.fgmask = resample_to_nearest_isotropic(kwargs.get('fgmask'))
+        else:
+            self.fgmask = None
         self.N = len(self.overlay_imgs)
         self.bgcolor = kwargs.get('bgcolor','w')
         self.clim_args = kwargs.get('clims',['1.0'])
@@ -217,7 +196,60 @@ class Oscar(object):
         underlay_data = self.get_slice_data(self.underlay_img, slice_type)
         overlay_datas = [self.get_slice_data(o_img, slice_type) for o_img in self.overlay_imgs]
         self.plot_slice(axis, slice_number, underlay_data, overlay_datas, cmaps, clims, olay_alphas)
-        
+    
+    def set_title(self, title_text, fig, fraction=0.05, min_fs=12, max_fs=36):
+        dpi = fig.dpi 
+        fig_w_in, fig_h_in = fig.get_size_inches()
+        fig_h_px = fig_h_in * dpi
+        fs = (fig_h_px * fraction) * 72.0 / dpi
+        fs = int(max(min_fs, min(fs, max_fs)))
+        titleobj = fig.suptitle(title_text, fontsize=fs)
+        bg = fig.get_facecolor()
+        if getattr(self, 'bgcolor', None) is not None:
+            bg = self.bgcolor 
+        rgb = matplotlib.colors.to_rgb(bg)
+        def channel(c):
+            # WCAG 2.0 luminescence 
+            return c/12.92 if c <= 0.03928 else ((c+0.055)/1.055)**2.4
+        lum = 0.2126*channel(rgb[0]) + 0.7152*channel(rgb[1]) + 0.0722*channel(rgb[2])
+        if lum < 0.5:
+            # white
+            plt.setp(titleobj, color='w')
+        else:
+            # black 
+            plt.setp(titleobj, color='k')     
+        return titleobj 
+    
+    def automatic_grid(self, slice_type, grid_x, grid_y):
+        # get slices automatically to cover brain in a skull-stripping input image 
+        # compute cropping bounds 
+        if self.fgmask:
+            data = self.fgmask.get_fdata()
+        else:
+            data = self.underlay_img.get_fdata()
+        if data.ndim > 3:
+            # maximum of non-x,y,z axes 
+            data = np.nanmax(data, axis=tuple(range(3,data.ndim)))
+        mask = (data > 0)
+        trim_fraction = 0.01 
+        coords = np.argwhere(mask)
+        if slice_type.lower().startswith('s'):
+            axis = 0 
+        elif slice_type.lower().startswith('c'):
+            axis = 1 
+        elif slice_type.lower().startswith('a'):
+            axis = 2 
+        else:
+            raise ValueError(f'Unrecognized slice_type {slice_type}')
+        # Sort coordinates along each axis
+        inds_sorted = np.sort(coords[:, axis])  # x-axis
+        n = len(coords)
+        trim_count = int(n * trim_fraction)
+        v1 = inds_sorted[trim_count]
+        v2 = inds_sorted[-trim_count - 1]
+        n_grid = grid_x * grid_y 
+        return list(np.round(np.linspace(v1, v2, n_grid)).astype(int))
+    
     def plot_slice(self, ax, slice, underlay_data, overlay_datas=[], cmaps=None, 
                    clims=None, olay_alphas=None, vmax=None, vmin=None):
         if vmax is None:
@@ -278,8 +310,8 @@ class Oscar(object):
         subOscar = Oscar(self.underlay_img, overlay_imgs=[overlay_img], **kwargs)
         fig = subOscar.slice_grid(ulay_slice_type, center=ulay_center)
         if output_filebase:
-            plt.savefig('{0}_grid_{1}.{2}'.format(output_filebase, slice_type, self.file_format), dpi=self.dpi, 
-                facecolor=fig.get_facecolor(), edgecolor='none')
+            plt.savefig('{0}_grid_{1}.{2}'.format(output_filebase, slice_type, self.file_format), 
+                    bbox_inches='tight', dpi=self.dpi, facecolor=fig.get_facecolor(), edgecolor='none')
             plt.close()
         else:
             return fig 
@@ -319,15 +351,11 @@ class Oscar(object):
                 plt.setp(cbytick_obj, color='w')
         fig.set_facecolor(self.bgcolor)
         if title:
-            title_obj = fig.suptitle(title)
-            if self.bgcolor.startswith('w'):       
-                plt.setp(title_obj, color='k')     
-            else:
-                plt.setp(title_obj, color='w')     
+            self.set_title(title, fig)
         fig.subplots_adjust(hspace=0.0, wspace=0.0)
         if output_filebase:
-            plt.savefig('{0}.{1}'.format(output_filebase, self.file_format), dpi=self.dpi, 
-                facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
+            plt.savefig('{0}.{1}'.format(output_filebase, self.file_format), 
+                    bbox_inches='tight', dpi=self.dpi, facecolor=fig.get_facecolor(), edgecolor='none')
             logging.info('Saved image file ' + '{0}.{1}'.format(output_filebase, self.file_format))
             plt.close()
         else:
@@ -365,8 +393,9 @@ class Oscar(object):
                 else:
                     plt.setp(cbytick_obj, color='w')
             if title:
-                fig.suptitle(title)
-            plt.savefig(output_filebase+'_{0:06d}.{1}'.format(i, self.file_format), dpi=self.dpi, facecolor=fig.get_facecolor())
+                self.set_title(title, fig)
+            plt.savefig(output_filebase+'_{0:06d}.{1}'.format(i, self.file_format), 
+                    dpi=self.dpi, bbox_inches='tight', facecolor=fig.get_facecolor())
             filenames.append(output_filebase+'_{0:06d}.{1}'.format(i, self.file_format))
             plt.close()
         return filenames
@@ -396,8 +425,9 @@ class Oscar(object):
             ax.set_facecolor(self.bgcolor)
             self.plot_slice(ax, i, data)
             if title:
-                fig.suptitle(title)
-            plt.savefig(output_filebase+'_{0:06d}.{1}'.format(i, self.file_format), dpi=self.dpi, facecolor=fig.get_facecolor())
+                self.set_title(title, fig)
+            plt.savefig(output_filebase+'_{0:06d}.{1}'.format(i, self.file_format), 
+                    dpi=self.dpi, bbox_inches='tight', facecolor=fig.get_facecolor())
             filenames.append(output_filebase+'_{0:06d}.{1}'.format(i, self.file_format))
             plt.close()
         return filenames
@@ -406,10 +436,10 @@ class Oscar(object):
             axes_pad=0.0, cbar_location="right", cbar_size="5%", cbar_pad=0.15, title=None):
         underlay = self.underlay_img.get_fdata()
         nt = underlay.shape[-1]
-        if nt < 10:
+        if nt < 8:
             ncols = nt
         else:
-            ncols = 10 
+            ncols = 8 
         nrows = int(ceil(float(nt) / ncols))
         # turn the image into a list of 3d niftis, squeeze because tensors are x,y,z,1,6 
         fig = plt.figure(figsize=self.figsize, dpi=self.dpi)
@@ -424,8 +454,14 @@ class Oscar(object):
                 cbar_pad=cbar_pad,
         )
         if slice_number is None:
-            img = nifti_image(np.squeeze(underlay[...,0]), self.affine)
-            slice_number = int(self.get_slice_data(img, slice_type).shape[-1] / 2)
+            ulay_max = np.max(np.abs(np.squeeze(underlay)),axis=-1)
+            com_voxel = [int(c) for c in center_of_mass(ulay_max)]
+            if slice_type.lower() in ['axial','ax','a','z']:
+                slice_number = com_voxel[2]
+            elif slice_type.lower() in ['coronal','cor','c','y']:
+                slice_number = com_voxel[1]
+            elif slice_type.lower() in ['sagittal','sag','s','x']:
+                slice_number = com_voxel[0]
         for i in range(nrows*ncols):
             if i < nt:
                 img = nifti_image(np.squeeze(underlay[...,i]), self.affine)
@@ -439,15 +475,11 @@ class Oscar(object):
             vmax_ = np.percentile(data[data!=0],99.5)
             self.plot_slice(ax, slice_number, data, vmin=vmin_, vmax=vmax_)
         if title:
-            title_obj = fig.suptitle(title, fontsize=16)
-            if self.bgcolor.startswith('w'):       
-                plt.setp(title_obj, color='k')     
-            else:
-                plt.setp(title_obj, color='w')    
+            self.set_title(title, fig)  
         fig.set_facecolor(self.bgcolor)
         fig.subplots_adjust(hspace=0.0, wspace=0.0)
-        plt.savefig('{0}.{1}'.format(output_filebase, self.file_format), dpi=self.dpi, 
-                facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
+        plt.savefig('{0}.{1}'.format(output_filebase, self.file_format), 
+                dpi=self.dpi, bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none')
         plt.close()    
         return '{0}.{1}'.format(output_filebase, self.file_format)
 
@@ -466,6 +498,10 @@ def oscar_argparser():
                     type=str, required=False, default=[],
                     help='An overlay image in Nifti format. Can be used more than once'
                     )
+    p.add_argument('-x','--mask', action='store', metavar='<nii>', dest='fgmask',
+                    type=str, required=False, default=None,
+                    help='An optional mask image determining the foreground of the underlay image, used for --auto-grid option'
+                    )
     p.add_argument('-c','--cmap',action='append',metavar='<cmap>',dest='cmaps',
                     type=str, required=False, default=[],
                     help='Provide a pyplot colormap for the overlay. Can be used more than once'
@@ -479,7 +515,7 @@ def oscar_argparser():
                     help='The slice type. Not yet implemented. Default axial.'
                     )
     p.add_argument('-n','--slicenum',action='store',metavar='<slice>', dest='slice_number',
-                    type=int, required=False, default=[], nargs="*",
+                    type=int, required=False, default=[None], nargs="*",
                     help='If 4D input, the slice chosen as background. Default is middle slice. If 3D input, expects a list of slices of the same length as nrows x ncolumns in grid mode.'
                     )
     p.add_argument('-g', '--grid', action='store', metavar='<int>', dest='grid', 
@@ -540,7 +576,7 @@ def oscar_argparser():
                     required=False, default='k', 
                     help='Background color, default is black.'
                     )
-    p.add_argument('-x','--cleanup', action='store_true',dest='cleanup',
+    p.add_argument('--cleanup', action='store_true',dest='cleanup',
                     required=False, default=False,
                     help='Delete .pngs once movies have been made.')
     return p
@@ -568,6 +604,10 @@ def run_oscar_commandline(args):
     pmask_fn, palpha = args.pmask
     kwargs['palpha'] = float(palpha)
     kwargs['abs_thresh'] = args.abs
+    if args.fgmask is not None:
+        kwargs['fgmask'] = read_nifti(args.fgmask)
+    else:
+        kwargs['fgmask'] = None
     if pmask_fn:
         kwargs['pmask'] = read_nifti(pmask_fn)
     else:
@@ -616,7 +656,7 @@ def run_oscar_commandline(args):
             elif len(grid) <= 2:
                 nrows, ncols = grid[:2]
                 if auto_grid:
-                    slice_list = automatic_grid(underlay_img, slice_type, nrows, ncols)
+                    slice_list = myOscar.automatic_grid(slice_type, nrows, ncols)
                 else:
                     slice_list = slice_number
                 spacing=1
@@ -629,14 +669,13 @@ def run_oscar_commandline(args):
                     center = underlay_img.shape[0] - center
                 if slice_list:
                     slice_list = sorted([underlay_img.shape[0] - s  for s in slice_list])
-            print(f'slice_list: {slice_list}')
             myOscar.slice_grid(slice_type, output_filebase=output_filebase, slices=slice_list,
                         nrows=nrows, ncols=ncols, center=center, spacing=spacing, title=args.title)    
             if args.grid_view:
                 myOscar.slice_grid_view(slice_type, output_filebase=output_filebase, slices=slice_list,
                         nrows=nrows, ncols=ncols, center=center, spacing=spacing, ulay_center=ulay_center)
         else:
-            print("Create frames of slices from 3D Nifti data")
+            print("Create screenshots of every slice")
             screenshots = myOscar.screenshots_3d(slice_type, output_filebase)
             if args.file_format == 'gif':
                 output_fn = myOscar.images_to_gif(screenshots, output_filebase+'.gif')
