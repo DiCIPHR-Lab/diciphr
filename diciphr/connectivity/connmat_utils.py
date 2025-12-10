@@ -36,8 +36,10 @@ def volume_normalize(connmat, atlas_im, labels, symmetrize=True, zero_diagonal=T
         np.fill_diagonal(connmat_normalized, 0)
     return connmat_normalized, volume_mat
     
-def read_connmat(f, delimiter=' ', fill_diagonal=0, symmetrize=True):
+def read_connmat(f, delimiter=' ', fill_diagonal=0, zero_nans=True, symmetrize=True):
     mat = np.loadtxt(f, delimiter=delimiter).astype(np.float32)
+    if zero_nans:
+        mat[np.isnan(mat)] = 0 
     if fill_diagonal:
         np.fill_diagonal(mat,fill_diagonal)
     if symmetrize:
@@ -74,6 +76,7 @@ def binarize_mat(connmat):
     
 def normalize_mat(connmat):
     '''Min-max normalize a matrix''' 
+    logging.debug('diciphr.connectivity.connmat_utils.normalize_mat')
     return (connmat.astype(np.float32) - np.min(connmat))/(np.max(connmat) - np.min(connmat))
 
 def fischer_z_transform(connmat):
@@ -113,12 +116,10 @@ def prune_mat(connmat, density_target=0.15, abs=False):
         connmat_thresh[connmat_thresh < threshold_value] = 0 
     return connmat_thresh
     
-def log_scale_mat(connmat, base=10):
-    if base == 'e':
-        base = np.e
-    connmat = np.log(connmat)
-    connmat[np.isinf(connmat)] = 0
-    connmat = connmat/np.log(base)
+def log_scale_mat(connmat, max_value=None):
+    connmat = np.log(1+connmat)
+    if max_value:
+        connmat = connmat / np.log(1+max_value)
     return connmat 
     
 def coefficient_of_variation(mat_array):
