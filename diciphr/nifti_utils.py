@@ -12,7 +12,6 @@ from diciphr.utils import ( which, TempDirManager, is_nifti_file, force_to_list,
                 ExecCommand, ExecFSLCommand )
 from scipy.ndimage.morphology import generate_binary_structure, binary_erosion, binary_dilation
 from scipy.cluster.vq import kmeans2
-from collections import OrderedDict
 
 ##############################################
 ########   NIFTI FILENAME FUNCTIONS  #########
@@ -73,6 +72,9 @@ def find_nifti_from_basename(prefix):
     if len(found) > 1: 
         raise ValueError(f'Found multiple nifti files from prefix {prefix}')
     return found[0]
+
+def is_nifti_object(obj):
+    return isinstance(obj, nib.Nifti1Image)
 
 def match_nifti_filenames(directory, match_strings, diffusion=False, json=True):
     """
@@ -1015,24 +1017,6 @@ def extract_roi(atlas_im, roi_index):
     roi_im = nifti_image(roi_data, atlas_im.affine, atlas_im.header)
     return roi_im
     
-def center_of_mass_atlas(atlas_im, labels=[], return_voxel_coordinates=False):
-    atlas_data = atlas_im.get_fdata().astype(np.int16)
-    atlas_affine = atlas_im.affine
-    if not labels:
-        labels = np.unique(atlas_data[atlas_data>0])
-    coordinate_coms = OrderedDict()
-    for label in labels:
-        x, y, z = np.where(atlas_data == label)
-        x_com = np.mean(x.astype(np.float32))
-        y_com = np.mean(y.astype(np.float32))
-        z_com = np.mean(z.astype(np.float32))
-        if not return_voxel_coordinates:
-            voxel_vector = np.array([[x_com],[y_com],[z_com],[1]])
-            coordinate_coms[label] = list(np.dot(atlas_affine, voxel_vector).flatten()[:3])
-        else:
-            coordinate_coms[label] = [ int(np.round(x_com)), int(np.round(y_com)), int(np.round(z_com)) ]
-    return coordinate_coms
-  
 def split_image(nifti_im, dimension='t', index=None, squeeze=False):
     '''Split an image along a given dimension and save to output_filebase.
     

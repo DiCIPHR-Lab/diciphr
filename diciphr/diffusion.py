@@ -269,7 +269,11 @@ def extract_b0(dwi_im, bvals, bvecs=None, first=False, average=True, mcflirt=Fal
     b0_im = nifti_image(b0, dwi_im.affine, dwi_im.header)
     return b0_im
 
+def has_gaussian_shells(bvals):
+    return (np.logical_and(np.array(bvals)<=1500, np.array(bvals)>=500)).any()
+
 def extract_gaussian_shells(dwi_im, bvals, bvecs):
+    logging.debug('diciphr.diffusion.extract_gaussian_shells')
     if np.max(bvals) > 1500 or np.min(bvals[bvals>0]) < 500:
         logging.info("B-values outside the Gaussian range 500-1500 detected.")
         bvals_gaussian = list(np.unique(bvals[np.logical_and(bvals >= 500, bvals <=1500)]))
@@ -1497,6 +1501,7 @@ def n4_bias_correct_dwi(dwi_img, bvals, bvecs, field=False, mask_img=None, weigh
     ''' 
     Run ANTs N4BiasFieldCorrection on a DWI image.
     '''
+    logging.debug('diciphr.diffusion.n4_bias_correct_dwi')
     if convergence is None:
         convergence = '[50x50x50x50,1e-3]'
     if bspline is None:

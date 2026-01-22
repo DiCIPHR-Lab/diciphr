@@ -6,7 +6,7 @@ from diciphr.nifti_utils import ( write_nifti, resample_image, apply_mask_to_ima
 import numpy as np
     
 def ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=None, t1_mask_img=None, dti_mask_img=None,
-        resample_inputs=True, initial=None, syn=False, phase_enc='AP'):
+        resample_inputs=False, initial=None, syn=False, phase_enc='AP'):
     weight_fa=0.3
     weight_b0=0.7 
     if syn:

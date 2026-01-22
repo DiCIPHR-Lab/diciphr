@@ -6,6 +6,7 @@ Created on Mon Jan 18 14:04:32 2016
 """
 
 import os, shutil, logging
+import re
 from datetime import datetime
 from glob import glob 
 from collections import defaultdict
@@ -268,14 +269,33 @@ def dicom_series_to_nifti(dicom_files, output_prefix, decompress=False, json=Tru
             output_files.append(output_file)
     return output_files 
 
-def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, 
-                       orientation='LPS', no_convert=False,
-                       decompress=False, encode_dates=False):
+def _sanitize_path_component(path):
+    """
+    Make a string safe for use as a single path component (directory/file path).
+    Keeps letters, digits, '_', '-', '+', and '.'; everything else -> '_'.
+    Collapses repeated underscores and strips leading/trailing whitespace/underscores.
+    """
+    s = ''.join(c if (c.isalnum() or c in ('_', '-', '+', '.')) else '_' for c in str(path))
+    s = re.sub(r'_+', '_', s).strip(' _')
+    return s or 'untitled'
+
+def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_sort_dir=None, 
+                       no_convert=False, orientation='LPS', decompress=False, encode_dates=False):
     logging.info(f'Subject: {subject}')
     logging.info(f'DICOM directory: {dicom_dir}')
     logging.info(f'NIfTI output directory: {nifti_dir}')
+    sort_mode=str(sort_mode).lower()
+    if sort_mode not in ('none', 'link','copy','move'):
+        raise ValueError("sort_mode must be one of: 'none', 'link', 'copy', 'move'")
+    if sort_mode != 'none':
+        if dicom_sort_dir is None:
+            dicom_sort_dir = os.path.join(nifti_dir, 'sorted_dicoms')
+        os.makedirs(dicom_sort_dir, exist_ok=True)
+        logging.info(f'Sorted DICOMs directory: {dicom_sort_dir}')
+    # initialize attributes dataframe
     df = pd.DataFrame(columns=['Subject']+default_keys+['Nifti'])
     dicom_map = {}
+    # begin 
     dicom_files = find_all_files_in_dir(dicom_dir)
     grouped_files, grouped_attributes = group_dicoms_by_series_attributes(
         dicom_files, encode_dates=encode_dates
@@ -302,19 +322,51 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir,
             if encode_dates:
                 studydate = date_map[attributes['StudyDate']]
             else:
-                studydate = attributes['StudyDate']
+                studydate = attributes['StudyDate']                
+            # ---- optional sorting step ----
+            if sort_mode != 'none':
+                # Construct group directory name and create it
+                group_dir_name = f"{_sanitize_path_component(studydate)}_s{seriesnum:03d}_{_sanitize_path_component(seriesdesc)}"
+                dest_dir = os.path.join(dicom_sort_dir, group_dir_name)
+                os.makedirs(dest_dir, exist_ok=True)
+
+                # Fan-in files into the group dir (symlink/copy/move)
+                dest_paths = []
+                for i, src in enumerate(dicom_files):
+                    # Prefix with an index to prevent name collisions across scanners/folders
+                    dst = os.path.join(dest_dir, f"{i:05d}_" + os.path.basename(src))
+                    if sort_mode == 'link':
+                        if not os.path.exists(dst):
+                            try:
+                                os.symlink(os.path.realpath(src), dst)
+                            except OSError:
+                                # Fallback if symlink not permitted (e.g., Windows w/o privileges)
+                                shutil.copy2(src, dst)
+                    elif sort_mode == 'copy':
+                        if not os.path.exists(dst):
+                            shutil.copy2(src, dst)
+                    elif sort_mode == 'move':
+                        if not os.path.exists(dst):
+                            # If destination exists (idempotent rerun), skip moving to avoid overwrite
+                            shutil.move(src, dst)
+                    dest_paths.append(dst)
+                dicom_files_for_conversion = dest_paths
+            else:
+                dicom_files_for_conversion = dicom_files
+            # ---- end sorting step ----
+                
             output_prefix = os.path.join(nifti_dir, subject)
             output_prefix += f'_{studydate}_s{seriesnum:03d}_{seriesdesc}'
             logging.info(f"Convert dicoms to nifti file {output_prefix}")
             nifti_files = dicom_series_to_nifti(
-                    dicom_files, output_prefix,
+                    dicom_files_for_conversion, output_prefix,
                     orientation=orientation,
                     quiet=True, json=True, decompress=decompress
                 )
             row = pd.Series(attributes)
             row['Subject'] = subject
             row['Nifti'] = ' '.join(nifti_files)
-            dicom_map[nifti_files[0]] = dicom_files
+            dicom_map[nifti_files[0]] = dicom_files_for_conversion
             df = df.append(row, ignore_index=True)
         except Exception:
             logging.exception(f'Failed to convert DICOMs for StudyInstanceUID,SeriesInstanceUID {uid_key}')
