@@ -1,13 +1,15 @@
 import os, logging
 import numpy as np
 from diciphr.utils import ExecCommand, force_to_list
-from diciphr.nifti_utils import read_nifti, write_nifti, nifti_image, threshold_image
+from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, 
+                             is_nifti_object, threshold_image, multiply_images )
 from diciphr.diffusion import calculate_lmax_from_bvecs
-from dipy.io.streamline import load_trk, save_trk 
-from dipy.io.stateful_tractogram import StatefulTractogram
+from dipy.io.streamline import load_trk, save_trk, load_tractogram 
+from dipy.io.stateful_tractogram import StatefulTractogram, Space
 from dipy.tracking.utils import density_map, target
 from dipy.tracking.streamline import length, values_from_volume
 import xml.etree.ElementTree as ET
+import nibabel as nib
 
 ##############################   
 # COMMON PREPROCESSING STEPS #
@@ -99,7 +101,39 @@ def track_stats(trk_input, nifti_scalars={}):
         ret_dict['SD '+scalar_name] = np.std(scalar_values)
     return ret_dict
         
+def region_coverage(trk_input, roi_img):
+    tdi_img = track_density_image(trk_input, ref_img=roi_img)
+    intersection_img = multiply_images(threshold_image(tdi_img), threshold_image(roi_img))
+    numer = (intersection_img.get_fdata()>0).sum()
+    denom = (roi_img.get_fdata()>0).sum()
+    return float(numer)/float(denom)
     
+def volume_symmetry(ipsi_obj, contra_obj, absolute=False):
+    if is_nifti_object(ipsi_obj):
+        ipsi_tdi = ipsi_obj
+    else:
+        ipsi_tdi = track_density_image(ipsi_obj)
+    if is_nifti_object(contra_obj):
+        contra_tdi = contra_obj
+    else:
+        contra_tdi = track_density_image(contra_obj)
+    ipsi_vol = threshold_image(ipsi_tdi).get_fdata().sum()
+    contra_vol = threshold_image(contra_tdi).get_fdata().sum()
+    numer = ipsi_vol - contra_vol
+    if absolute:
+        numer = abs(numer)
+    denom = (ipsi_vol + contra_vol)/2
+    return numer/denom 
+
+def track_density_statistics(input_obj):
+    if is_nifti_object(input_obj):
+        input_tdi = input_obj
+    else:
+        input_tdi = track_density_image(input_obj)
+    data = input_tdi.get_fdata()
+    data = data[data>0]
+    return data.mean(), data.std()
+                        
 def spline_filter(input_trk_file, output_trk_file, step_size=0.2):
     logging.debug('diciphr.tractography.track_utils.spline_filter')
     cmd = ['spline_filter', input_trk_file, step_size, output_trk_file]
@@ -167,23 +201,66 @@ def filter_tracks_exclude(input_trk_file, output_trk_file, exclude_mask_files):
     logging.debug(f'Filtered tractogram saved to {output_trk_file}')
     return output_trk_file
 
+#def track_density_image(trk_input, ref_img=None, output_filename=None):
+#    if isinstance(trk_input, StatefulTractogram):
+#        sft = trk_input
+#    else:
+#        sft = load_trk(trk_input, reference=ref_img if ref_img else 'same')
+#    sft_copy = StatefulTractogram.from_sft(sft.streamlines, sft, data_per_point=sft.data_per_point, data_per_streamline=sft.data_per_streamline)
+#    sft_copy.to_rasmm()
+#    if ref_img is None:
+#        ref_affine = sft.space_attributes[0]
+#        ref_shape = sft.space_attributes[1]
+#    else:
+#        ref_affine = ref_img.affine
+#        ref_shape = ref_img.shape
+#    tdi = density_map(sft_copy.streamlines, ref_affine, ref_shape)    
+#    tdi_im = nifti_image(np.asarray(tdi, dtype=np.uint8), ref_affine)
+#    if output_filename is not None:
+#        write_nifti(output_filename, tdi_im)
+#    return tdi_im
+    
 def track_density_image(trk_input, ref_img=None, output_filename=None):
+    """
+    Build a track density NIfTI image from a .trk (or a StatefulTractogram).
+
+    Parameters
+    ----------
+    trk_input : str | pathlib.Path | StatefulTractogram
+        Path to .trk file or already-loaded StatefulTractogram.
+    ref_img : nib.Nifti1Image | None
+        Reference image for affine+shape. If None, use the tractogram's own space attributes.
+    output_filename : str | None
+        If provided, write the NIfTI to this path.
+
+    Returns
+    -------
+    nib.Nifti1Image
+        Track density image (uint8) in the reference space.
+    """
+    # 1) Ensure we have a StatefulTractogram
     if isinstance(trk_input, StatefulTractogram):
         sft = trk_input
     else:
-        sft = load_trk(trk_input, reference=ref_img if ref_img else 'same')
-    sft_copy = StatefulTractogram.from_sft(sft.streamlines, sft, data_per_point=sft.data_per_point, data_per_streamline=sft.data_per_streamline)
-    sft_copy.to_rasmm()
+        sft = load_tractogram(trk_input, 
+                              ref_img if ref_img is not None else 'same', 
+                              bbox_valid_check=False)
+    # Convert to RASMM space (millimeters, RAS)
+    sft.to_space(Space.RASMM)
+    # Decide affine and shape
     if ref_img is None:
-        ref_affine = sft.space_attributes[0]
-        ref_shape = sft.space_attributes[1]
+        # StatefulTractogram keeps space attributes: (affine, shape)
+        ref_affine, ref_shape, __, __ = sft.space_attributes
     else:
         ref_affine = ref_img.affine
         ref_shape = ref_img.shape
-    tdi = density_map(sft_copy.streamlines, ref_affine, ref_shape)    
+    tdi = density_map(sft.streamlines, ref_affine, ref_shape)
+    # (uint8 for compact footprint)
     tdi_im = nifti_image(np.asarray(tdi, dtype=np.uint8), ref_affine)
+    # Optional save
     if output_filename is not None:
         write_nifti(output_filename, tdi_im)
+
     return tdi_im
 
 def downsample_tracks_fdc(trk_input, output_trk_filename=None, ref_filename=None, downsample_percent=50, num_iters=15, return_mean_densities=False):

@@ -2,7 +2,6 @@ import logging
 import numpy as np
 import nibabel as nib
 from nibabel.trackvis import read as read_trk
-from nibabel.trackvis import TrackvisFile
 
 def track_density_image(input_trk_file, ref_im):
     '''
