@@ -98,7 +98,8 @@ def lt_indices(mat, diagonal=False):
         return np.tril_indices(mat.shape[0],1)
 
 def prune_mat(connmat, density_target=0.15, abs=False):
-    ''' Prune a single connectome to a desired target density, keeping the strongest edges. If abs=True, will return strongest positive or negative edges.'''
+    ''' Prune a single connectome to a desired target density, keeping the strongest edges. 
+    If abs=True, will return strongest positive or negative edges.'''
     if density_target > 1:
         density_target = float(density_target)/100
     if density_target == 1:
@@ -161,3 +162,23 @@ def symmetric_mat_from_upper_mask(vector, upper_triangular_mask, fill_value=0.0)
 def rand_index(mask):
     edge_indices=np.array(np.where(mask))
     return tuple(edge_indices[:,np.random.randint(edge_indices.shape[1])])
+
+def center_of_mass_atlas(atlas_im, labels=[], return_voxel_coordinates=False):
+    atlas_data = atlas_im.get_fdata().astype(np.int16)
+    atlas_affine = atlas_im.affine
+    if not labels:
+        labels = np.unique(atlas_data[atlas_data > 0])
+    coordinate_coms = []
+    for label in labels:
+        x, y, z = np.where(atlas_data == label)
+        x_com = np.mean(x.astype(np.float32))
+        y_com = np.mean(y.astype(np.float32))
+        z_com = np.mean(z.astype(np.float32))
+        if not return_voxel_coordinates:
+            voxel_vector = np.array([[x_com], [y_com], [z_com], [1]])
+            world_coords = list(np.dot(atlas_affine, voxel_vector).flatten()[:3])
+            coordinate_coms.append((int(label), world_coords))
+        else:
+            voxel_coords = [int(np.round(x_com)), int(np.round(y_com)), int(np.round(z_com))]
+            coordinate_coms.append((int(label), voxel_coords))
+    return coordinate_coms
