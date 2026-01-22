@@ -45,6 +45,8 @@ def buildArgsParser():
                     type=str, required=False, default=None, 
                     help='The phase encoding direction, this option enables SyN DTI-T1 registration and is used to restrict the SyN deformation'
                     )
+    p.add_argument('--resample', action='store_true', dest='resample_inputs', 
+                    help='Resample inputs to 1mm isotropic resolution before registration')
 #    p.add_argument('-i', action='store', metavar='<str>', dest='initialize',
 #                    type=str, required=False, 
 #                    help='Registration initialization method. Options: antsAI (default for DTI-T1), identity, origin, centroid, a .txt (ITK-Snap) or .mat (ANTs) affine transformation file'
@@ -96,7 +98,8 @@ def registration_dti_t1(args):
     else:
         dti_mask_img = None
     syn = args.phase_enc is not None 
-    ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=fa_img, dti_mask_img=dti_mask_img, syn=syn, phase_enc=args.phase_enc)
+    ants_registration_dti_t1(output_prefix, b0_img, t1_img, fa_img=fa_img, dti_mask_img=dti_mask_img, 
+                             syn=syn, phase_enc=args.phase_enc, resample_inputs=args.resample_inputs)
 
 def registration_t1_eve(args):
     check_inputs(args.t1_file, nifti=True)

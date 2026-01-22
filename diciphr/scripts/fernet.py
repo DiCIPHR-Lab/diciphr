@@ -3,6 +3,7 @@ import os, sys, logging
 from diciphr.fernet.pipeline import run_fernet 
 from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
 
+
 DESCRIPTION = '''
 FERNET : FreewatER EstimatoR using iNtErpolated iniTialization
 Initialize the volume fraction map and free-water corrected tensor.
@@ -30,41 +31,47 @@ fernet_kwargs = {
 
 def buildArgsParser():
     p = DiciphrArgumentParser(description=DESCRIPTION)
-    p.add_argument('-d','-k','--data',action='store',metavar='dwi',dest='dwi',
+    p.add_argument('-d', '--data', action='store', metavar='dwi', dest='dwi',
                     type=str, required=True, 
                     help='Input DWIs data file (Nifti or Analyze format).'
-                    )
-    p.add_argument('-r','--bvecs', action='store', metavar='bvecs', dest='bvecs',
-                    type=str, required=False, default=None,
-                    help='Gradient directions (.bvec file).'
-                    )
-    p.add_argument('-b','--bvals', action='store', metavar='bvals', dest='bvals',
-                    type=str, required=False, default=None,
-                    help='B-values (.bval file).'
-                    )
-    p.add_argument('-m','--mask',action='store',metavar='mask', dest='mask',
-                    type=str, required=True, 
-                    help='Brain mask file (Nifti or Analyze format).'
-                    )
-    p.add_argument('-w','--wm',action='store',metavar='roi',dest='wm_roi',
-                    type=str, required=False, default=None, 
-                    help='An ROI defined in deep WM, e.g. corpus callosum (Nifti or Analyze format).'
-                    )
-    p.add_argument('-c','--csf',action='store',metavar='roi',dest='csf_roi',
-                    type=str, required=False, default=None, 
-                    help='An ROI defined in CSF, e.g. ventricle (Nifti or Analyze format).'
-                    )
-    p.add_argument('-x','--exclude',action='store',metavar='mask',dest='exclude_mask',
-                    type=str, required=False, default=None, 
-                    help='A mask (e.g. peritumoral region) of voxels to exclude when getting typical WM, GM voxels.'
                     )
     p.add_argument('-o', '--output', action='store', metavar='output', dest='output',
                     type=str, required=True,
                     help='Output basename for init tensor map and volume fraction.'
                     )
+    p.add_argument('-m', '--mask', action='store', metavar='mask', dest='mask',
+                    type=str, required=True, 
+                    help='Brain mask file (Nifti or Analyze format).'
+                    )
+    p.add_argument('-r', '--bvecs', action='store', metavar='bvecs', dest='bvecs',
+                    type=str, required=False, default=None,
+                    help='Gradient directions (.bvec file).'
+                    )
+    p.add_argument('-b', '--bvals', action='store', metavar='bvals', dest='bvals',
+                    type=str, required=False, default=None,
+                    help='B-values (.bval file).'
+                    )
+    p.add_argument('-w', '--wm', action='store', metavar='roi',dest='wm_roi',
+                    type=str, required=False, default=None, 
+                    help='An ROI defined in deep WM, e.g. corpus callosum (Nifti or Analyze format).'
+                    )
+    p.add_argument('-c', '--csf', action='store', metavar='roi',dest='csf_roi',
+                    type=str, required=False, default=None, 
+                    help='An ROI defined in CSF, e.g. ventricle (Nifti or Analyze format).'
+                    )
+    p.add_argument('-x', '--exclude', action='store', metavar='mask',dest='exclude_mask',
+                    type=str, required=False, default=None, 
+                    help='A mask (e.g. peritumoral region) of voxels to exclude when getting typical WM, GM voxels.'
+                    )
     p.add_argument('-n', '--niters', action='store', metavar='niters', dest='niters', 
                     type=int, required=False, default=50,
                     help='Number of iterations of the gradient descent. Default is 50'
+                    )
+    p.add_argument('-B', '--bias-correct', action='store_true', dest='bias_correct', 
+                    help='Run bias correction before FERNET. Recommended if data has not already been bias-corrected (as it typically is by dti_preprocess.py)'
+                    )
+    p.add_argument('-G', '--no-gaussian-check', action='store_false', dest='gaussian', 
+                    help='FERNET should be run on data with b-values between 500-1500 s/mm2. If your data does not fall in this range, this option overrides the check (not recommended)'
                     )
     return p
 
@@ -86,7 +93,7 @@ def main(argv):
             check_inputs(args.csf_roi, nifti=True)
         run_fernet(args.dwi, args.bvals, args.bvecs, args.mask, args.output,
                     wm_roi=args.wm_roi, csf_roi=args.csf_roi, exclude_mask=args.exclude_mask, 
-                    niters=args.niters, **fernet_kwargs)
+                    niters=args.niters, gaussian=args.gaussian, bias_correct=args.bias_correct, **fernet_kwargs)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise

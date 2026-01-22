@@ -1,6 +1,5 @@
 #! /usr/bin/env python
 import os, sys, logging
-from diciphr.nifti_utils import write_nifti, write_dwi, strip_nifti_ext
 from diciphr.dicoms import run_dicom_to_nifti
 from diciphr.utils import make_dir, check_inputs, protocol_logging, DiciphrArgumentParser
 
@@ -12,24 +11,32 @@ PROTOCOL_NAME='convert_dicoms'
 
 def buildArgsParser():
     p = DiciphrArgumentParser(description=DESCRIPTION)
-    p.add_argument('-s',action='store',metavar='subject',dest='subject',
+    p.add_argument('-s', '--subject', action='store', metavar='subject', dest='subject',
                     type=str, required=True, 
                     help='The subject ID'
                     )
-    p.add_argument('-d', action='store', metavar='dcmdir', dest='dicoms_dir', 
+    p.add_argument('-d', '--dicoms', action='store', metavar='dcmdir', dest='dicoms_dir', 
                     type=str, required=False, default=None, 
                     help='Name of the directory where dicoms are located. Default is {outdir}/dicoms/{subject}'
                     )
-    p.add_argument('-o', action='store', metavar='outdir', dest='project_dir', 
+    p.add_argument('-o', '--outdir', action='store', metavar='outdir', dest='project_dir', 
                     type=str, required=False, default=os.getcwd(), 
-                    help='The project directory. Directory "Nifti/{subject}" will be created inside. The default is '+os.getcwd()
+                    help='The project directory. Directory "Nifti/{subject}" will be created inside. Defaults to the current directory'
+                    )
+    p.add_argument('-m', '--mode', action='store', metavar='str', dest='mode_string', 
+                    type=str, required=False, default='convert', 
+                    help='Dicom sort operation mode: none (default), link, copy, move'
+                    )
+    p.add_argument('-D', '--sorted-dir', action='store', metavar='str', dest='dicom_sort_dir', 
+                    type=str, required=False, default=None, 
+                    help='Directory to place sorted dicoms. Default is {project_dir}/Nifti/{subject}/sorted_dicoms'
+                    )
+    p.add_argument('-n', '--no-convert', action='store_true', dest='no_convert', required=False,
+                    help='Only sort dicoms and make links, do not convert to Nifti.'
                     )
     p.add_argument('-r', '--orient', action='store', metavar='orn', dest='orientation', 
                     type=str, required=False, default='LPS',
                     help='Orientation of the output nifti images. Default is LPS.'
-                    )
-    p.add_argument('-n', '--no-convert', action='store_true', dest='no_convert', required=False,
-                    help='Only sort dicoms and make links, do not convert to Nifti.'
                     )
     p.add_argument('-x', '--decompress', action='store_true', dest='decompress', required=False, 
                     help='Decompress dicom data with gdcmconv before attempting to convert to Nifti.'
@@ -55,6 +62,8 @@ def main(argv):
             dicoms_dir = os.path.join(project_dir, 'dicoms', args.subject)
         else:
             dicoms_dir = os.path.realpath(args.dicoms_dir)
+        if args.dicom_sort_dir is not None:
+            args.dicom_sort_dir = os.path.realpath(args.dicom_sort_dir)
         check_inputs(dicoms_dir, directory=True)
         make_dir(nifti_dir, recursive=False, pass_if_exists=True)
         make_dir(lists_dir, recursive=False, pass_if_exists=True)
@@ -62,8 +71,8 @@ def main(argv):
         subject_nifti_dir = os.path.join(nifti_dir, args.subject)
         make_dir(subject_nifti_dir, recursive=False, pass_if_exists=True)
         df, dicom_map = run_dicom_to_nifti(args.subject, dicoms_dir, subject_nifti_dir, 
-                orientation=args.orientation, no_convert=args.no_convert, 
-                decompress=args.decompress, encode_dates=args.encode_dates)
+                orientation=args.orientation, sort_mode=args.mode_string, dicom_sort_dir=args.dicom_sort_dir,
+                no_convert=args.no_convert, decompress=args.decompress, encode_dates=args.encode_dates)
         df.to_csv(csv_file)
         with open(dicoms_map_file, 'w') as fid:
             for niftifile, dicomfiles in dicom_map.items():
