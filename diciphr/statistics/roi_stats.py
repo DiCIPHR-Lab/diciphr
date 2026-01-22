@@ -11,6 +11,12 @@ def scalar_roi_stats(scalar_im, atlas_im, measures=['mean','median','std','volum
     logging.debug('diciphr.statistics.dti_roi_stats')
     scalar_data = scalar_im.get_fdata()
     atlas_data = atlas_im.get_fdata().astype(np.int32)
+    # Remove any NaNs from atlas labels
+    nan_mask = np.isnan(scalar_data)
+    num_nans = nan_mask.sum()
+    if nan_mask.any():
+        logging.warning(f"NaN voxels (n={num_nans}) found in scalar data, removing these voxels from atlas labels")
+    atlas_data[nan_mask] = 0 
     if labels is None:
         labels = range(1,atlas_data.max()+1)
     num_labels = len(labels)
