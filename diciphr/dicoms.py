@@ -289,12 +289,12 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
         raise ValueError("sort_mode must be one of: 'none', 'link', 'copy', 'move'")
     if sort_mode != 'none':
         if dicom_sort_dir is None:
-            dicom_sort_dir = os.path.join(nifti_dir, 'sorted_dicoms')
+            raise ValueError("If sort_mode is not 'none', dicom_sort_dir must be provided")
         os.makedirs(dicom_sort_dir, exist_ok=True)
         logging.info(f'Sorted DICOMs directory: {dicom_sort_dir}')
     # initialize attributes dataframe
     df = pd.DataFrame(columns=['Subject']+default_keys+['Nifti'])
-    dicom_map = {}
+    dicom_nifti_map = {}
     # begin 
     dicom_files = find_all_files_in_dir(dicom_dir)
     grouped_files, grouped_attributes = group_dicoms_by_series_attributes(
@@ -324,10 +324,10 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
             else:
                 studydate = attributes['StudyDate']                
             # ---- optional sorting step ----
+            path_string = f"{_sanitize_path_component(studydate)}_s{seriesnum:03d}_{_sanitize_path_component(seriesdesc)}"
             if sort_mode != 'none':
                 # Construct group directory name and create it
-                group_dir_name = f"{_sanitize_path_component(studydate)}_s{seriesnum:03d}_{_sanitize_path_component(seriesdesc)}"
-                dest_dir = os.path.join(dicom_sort_dir, group_dir_name)
+                dest_dir = os.path.join(dicom_sort_dir, path_string)
                 os.makedirs(dest_dir, exist_ok=True)
 
                 # Fan-in files into the group dir (symlink/copy/move)
@@ -354,21 +354,20 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
             else:
                 dicom_files_for_conversion = dicom_files
             # ---- end sorting step ----
-                
-            output_prefix = os.path.join(nifti_dir, subject)
-            output_prefix += f'_{studydate}_s{seriesnum:03d}_{seriesdesc}'
-            logging.info(f"Convert dicoms to nifti file {output_prefix}")
-            nifti_files = dicom_series_to_nifti(
-                    dicom_files_for_conversion, output_prefix,
-                    orientation=orientation,
-                    quiet=True, json=True, decompress=decompress
-                )
-            row = pd.Series(attributes)
-            row['Subject'] = subject
-            row['Nifti'] = ' '.join(nifti_files)
-            dicom_map[nifti_files[0]] = dicom_files_for_conversion
+            if no_convert is False:
+                output_prefix = os.path.join(nifti_dir, subject) + "_" + path_string
+                logging.info(f"Convert dicoms to nifti file {output_prefix}")
+                nifti_files = dicom_series_to_nifti(
+                        dicom_files_for_conversion, output_prefix,
+                        orientation=orientation,
+                        quiet=True, json=True, decompress=decompress
+                    )
+                row = pd.Series(attributes)
+                row['Subject'] = subject
+                row['Nifti'] = ' '.join(nifti_files)
+                dicom_nifti_map[nifti_files[0]] = dicom_files_for_conversion
             df = df.append(row, ignore_index=True)
         except Exception:
             logging.exception(f'Failed to convert DICOMs for StudyInstanceUID,SeriesInstanceUID {uid_key}')
     logging.info('Conversion complete.')
-    return df, dicom_map
+    return df, dicom_nifti_map
