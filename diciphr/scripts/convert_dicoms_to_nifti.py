@@ -25,7 +25,7 @@ def buildArgsParser():
                     )
     p.add_argument('-m', '--mode', action='store', metavar='str', dest='mode_string', 
                     type=str, required=False, default='convert', 
-                    help='Dicom sort operation mode: none (default), link, copy, move'
+                    help='Dicom sort operation mode: none (default), link, copy, move, anonymize'
                     )
     p.add_argument('-n', '--no-convert', action='store_true', dest='no_convert', required=False,
                     help='Only sort dicoms and make links, do not convert to Nifti.'
@@ -42,13 +42,28 @@ def buildArgsParser():
                     )
     return p
 
+def name_dicom_sort_dir(project_dir, subject, mode_string):
+    mode_string = str(mode_string).lower()[:4]
+    if mode_string == 'none':
+        return os.path.join(project_dir, 'dicoms_sorted', subject)
+    elif mode_string == 'link':
+        return os.path.join(project_dir, 'dicoms_linked', subject)
+    elif mode_string == 'copy':
+        return os.path.join(project_dir, 'dicoms_copied', subject)
+    elif mode_string == 'move':
+        return os.path.join(project_dir, 'dicoms_moved', subject)
+    elif mode_string == 'anon':
+        return os.path.join(project_dir, 'dicoms_anon', subject)
+    else:
+        raise ValueError("Dicom sort operation mode must be one of: 'none', 'link', 'copy', 'move', 'anonymize'")
+
 def main(argv):
     parser = buildArgsParser()
     args = parser.parse_args(argv)
     project_dir = os.path.realpath(args.project_dir)
     check_inputs(project_dir, directory=True)
     nifti_dir = os.path.join(project_dir, 'Nifti', args.subject)
-    dicom_sort_dir = os.path.join(project_dir, 'sorted_dicoms', args.subject)
+    dicom_sort_dir = name_dicom_sort_dir(project_dir, args.subject, args.mode_string)
     lists_dir = os.path.join(project_dir, 'Lists')
     logs_dir = args.logdir or os.path.join(project_dir, 'logs')
     log_file = protocol_logging(PROTOCOL_NAME, directory=logs_dir, filename=args.logfile, debug=args.debug, create_dir=True)
