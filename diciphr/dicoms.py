@@ -7,15 +7,20 @@ Created on Mon Jan 18 14:04:32 2016
 
 import os, shutil, logging
 import re
-from datetime import datetime
 from glob import glob 
 from collections import defaultdict
 from diciphr.utils import which, find_all_files_in_dir, ExecCommand, TempDirManager
 from diciphr.nifti_utils import ( read_nifti, read_dwi, write_nifti, 
             write_dwi, strip_nifti_ext, reorient_nifti, reorient_dwi )
-import pydicom 
+from pydicom import dcmread 
 from pydicom.errors import InvalidDicomError
 from pydicom.multival import MultiValue
+from pydicom.uid import generate_uid
+from pydicom.dataset import Dataset
+from pydicom.tag import Tag
+from pydicom.datadict import dictionary_VR
+from pydicom.dataelem import DataElement
+from pydicom.sequence import Sequence
 import pandas as pd
 
 #############################################
@@ -102,7 +107,7 @@ def is_dicom_file(filepath, force=False):
 
 def read_dicom_file(filename, stop_before_pixels=False, force=False):
     logging.debug('diciphr.dicoms.read_dicom_file')
-    return pydicom.dcmread(filename, stop_before_pixels=stop_before_pixels, force=force)
+    return dcmread(filename, stop_before_pixels=stop_before_pixels, force=force)
 
 def get_dicom_series_attributes(dicom_files, keys=None, replace_spaces=False, ignore_errors=True):
     logging.debug('diciphr.dicoms.get_dicom_series_attributes')
@@ -154,14 +159,6 @@ def get_dicom_series_attributes(dicom_files, keys=None, replace_spaces=False, ig
                     _attribute = '_'.join(str(_attribute).split())
                 dicom_attributes[key].append(_attribute)
     return dicom_attributes
-
-def _parse_time(time_str):
-    for fmt in ("%H%M%S.%f", "%H%M%S"):
-        try:
-            return datetime.strptime(time_str, fmt)
-        except ValueError:
-            continue
-    raise ValueError(f"Time format not recognized: {time_str}")
 
 def group_dicoms_by_series_attributes(dicom_files, encode_dates=False):
     grouped_files = defaultdict(list)
@@ -279,19 +276,219 @@ def _sanitize_path_component(path):
     s = re.sub(r'_+', '_', s).strip(' _')
     return s or 'untitled'
 
+def _empty_element(ds, tag_like):
+    tag = Tag(tag_like)
+    vr = dictionary_VR(tag)
+    if vr is None:
+        ds[tag] = DataElement(tag, 'UN', b'')
+        return
+    if vr == "SQ":
+        ds[tag] = DataElement(tag, "SQ", Sequence([]))
+    elif vr in {'OB', 'OD', 'OF', 'OL', 'OW', 'UN'}:
+        ds[tag] = DataElement(tag, vr, b'')
+    else:
+        ds[tag] = DataElement(tag, vr, "")
+
+def _scrub_all_date_time(ds):
+    """Remove all DA/TM/DT VR fields recursively."""
+    for tag in list(ds.keys()):
+        elem = ds[tag]
+        vr = elem.VR
+        if vr == "SQ":
+            for item in elem:
+                _scrub_all_date_time(item)
+            continue
+
+        if vr in ("DA", "TM", "DT"):
+            ds[tag].value = ""
+
+def _build_tag_list(anonymization_level):
+    """
+    Returns a list of tags to empty (zero-length).
+    Extends your list depending on anonymization_level.
+    """
+    # Base identity PHI 
+    basic_tags = [
+        (0x0008,0x0050),  # AccessionNumber
+        (0x0008,0x0080),  # InstitutionName
+        (0x0008,0x0081),  # InstitutionAddress
+        (0x0008,0x0090),  # ReferringPhysicianName
+        (0x0008,0x0092),  # ReferringPhysicianAddress
+        (0x0008,0x0094),  # ReferringPhysicianTelephone
+        (0x0008,0x1010),  # StationName
+        (0x0008,0x1040),  # InstitutionalDepartmentName
+        (0x0008,0x1048),  # PhysiciansOfRecord
+        (0x0008,0x1050),  # PerformingPhysicianName
+        (0x0008,0x1060),  # NameOfPhysiciansReadingStudy        
+        (0x0008,0x1072),  # OperatorsIdentificationSequence
+        (0x0008,0x1070),  # OperatorsName
+        (0x0008,0x1080),  # AdmittingDiagnosesDescription        
+        (0x0010,0x0010),  # PatientName
+        (0x0010,0x0020),  # PatientID
+        (0x0010,0x0030),  # PatientBirthDate
+        (0x0010,0x0032),  # PatientBirthTime
+        (0x0010,0x0040),  # PatientSex
+        (0x0010,0x1000),  # OtherPatientIDs
+        (0x0010,0x1001),  # OtherPatientNames
+        (0x0010,0x1010),  # PatientAge
+        (0x0010,0x1020),  # PatientSize
+        (0x0010,0x1030),  # PatientWeight
+        (0x0010,0x1090),  # MedicalRecordLocator
+        (0x0010,0x2150),  # CountryOfResidence
+        (0x0010,0x2154),  # RegionOfResidence
+        (0x0010,0x2160),  # EthnicGroup
+        (0x0010,0x2180),  # Occupation
+        (0x0010,0x21A0),  # SmokingStatus
+        (0x0010,0x21B0),  # AdditionalPatientHistory
+        (0x0010,0x21C0),  # PregnancyStatus
+        (0x0010,0x21F0),  # PatientReligiousPreference
+        (0x0010,0x4000),  # PatientComments
+        (0x0020,0x0010),  # StudyID
+        (0x0020,0x4000),  # ImageComments
+        (0x0032,0x1020),  # Requesting Physician Identification Sequence
+        (0x0032,0x1032),  # Requesting Physician
+        (0x0032,0x1033),  # Requesting Service
+        (0x0032,0x1060), # Requested Procedure Module
+        (0x0040,0x0242),  # PerformedProcedureStepID
+        (0x0040,0x0253),  # Performed Procedure Step ID
+        (0x0040,0x0254), # Performed Procedure Step Description
+        (0x0040,0x0275),  # RequestAttributesSequence
+        (0x0040,0x0280), # Comments on the Performed Procedure Step
+    ]
+    # More extensive PHI needed for moderate anonymization
+    moderate_extra = [
+        (0x0018,0x1002),  # DeviceUID
+        (0x0018,0x700A),  # DetectorID
+        (0x0070,0x0001),  # GraphicAnnotationSequence
+        (0x0070,0x0004),  # TextObjectSequence
+        (0x0070,0x0081),  # ContentLabel
+        (0x0070,0x0082),  # ContentDescription
+        (0x0070,0x0084),  # ContentCreatorsName
+        (0x0070,0x0086),  # ContentCreatorsIdentificationCodeSequence
+        (0x0070,0x0086),  # ContentCreatorIdentificationCodeSequence
+        (0x0018,0x1000),  # DeviceSerialNumber
+        (0x0018,0x1020),  # SoftwareVersions
+        (0x0008,0x0082),  # InstitutionCodeSequence
+        (0x0008,0x1018),  # DeviceID
+        (0x0008,0x0052),  # QueryRetrieveLevel
+    ]
+    # “Strict” removes nearly everything possibly PHI:
+    strict_extra = [
+        (0x0008,0x0070),  # Manufacturer
+        (0x0008,0x1090),  # ManufacturerModelName
+        (0x0008,0x1030),  # StudyDescription
+    ]
+    
+    if anonymization_level == "basic":
+        return basic_tags
+    elif anonymization_level == "moderate":
+        return basic_tags + moderate_extra
+    elif anonymization_level == "strict":
+        return basic_tags + moderate_extra + strict_extra
+    else:
+        raise ValueError("anonymization_level must be 'basic', 'moderate', or 'strict'")
+
+def _remove_private_tags_except_siemens_csa(ds):
+    """
+    Remove private tags from a DICOM dataset with Siemens CSA preservation logic.
+
+    Behavior:
+      - If Siemens CSA tags are present, preserve:
+          * Siemens CSA elements (0029,1010) and (0029,1020)
+          * All private elements in Siemens groups 0x0019 and 0x0029
+          * The corresponding private creator elements in those groups (gggg,00xx)
+        Remove all other private tags (recursively, including in sequences).
+
+      - If Siemens CSA tags are absent, perform a standard recursive
+        ds.remove_private_tags() to strip all private elements.
+
+    Notes:
+      * This function modifies the dataset in-place.
+      * It mirrors pydicom's recursive behavior for sequences.
+    """
+    SIEMENS_CSA_TAGS = {
+        Tag(0x0029, 0x1010),  # CSA Image Header Info
+        Tag(0x0029, 0x1020),  # CSA Series Header Info
+    }
+    # Common Siemens private groups that frequently contain diffusion info
+    SIEMENS_KEEP_GROUPS = {0x0019, 0x0029}
+    if not any(tag in ds for tag in SIEMENS_CSA_TAGS):
+        # No CSA → do the standard, fully-recursive removal.
+        ds.remove_private_tags()
+        return
+    # CSA present → selective removal:
+    # We traverse recursively and collect tags to delete so we don't mutate while iterating.
+    def _prune_private_recursive(dset: Dataset):
+        to_delete = []
+        for elem in dset:
+            tag = elem.tag
+            # Recurse into sequences
+            if elem.VR == "SQ":
+                for item in elem:
+                    _prune_private_recursive(item)
+                continue
+            # Only consider private elements for deletion
+            if not tag.is_private:
+                continue
+            g = tag.group
+            e = tag.element
+            # Keep: Siemens CSA tags explicitly
+            if tag in SIEMENS_CSA_TAGS:
+                continue
+            # Keep: any private element in Siemens keep-groups (0019, 0029)
+            if g in SIEMENS_KEEP_GROUPS:
+                continue
+            # Also keep: private creator elements for Siemens groups we keep:
+            # Private creator slots are (gggg,00xx) with 0x0010 <= xx <= 0x00FF
+            if (e & 0xFF00) == 0x0000 and 0x0010 <= (e & 0x00FF) <= 0x00FF:
+                # Only keep creator elements if they belong to a Siemens keep-group
+                # (i.e., creator for 0019 or 0029). Creators are per-group, so g matters.
+                if g in SIEMENS_KEEP_GROUPS:
+                    continue
+            # All other private elements should be removed
+            to_delete.append(tag)
+
+        for tag in to_delete:
+            # It's safe to ignore KeyErrors if already removed by parent logic
+            if tag in dset:
+                del dset[tag]
+    _prune_private_recursive(ds)
+
+def anonymize_dicomfile(infile, outfile, anonymization_level='moderate'):
+    if not is_dicom_file(infile):
+        raise InvalidDicomError(f"{infile} is not a DICOM file")
+    ds = dcmread(infile, force=True)
+    # 1. Scrub ALL date/time fields (DA/TM/DT)
+    _scrub_all_date_time(ds)
+    # 2. Scrub PHI tag list depending on level
+    tag_list = _build_tag_list(anonymization_level)
+    for tag in tag_list:
+        if tag in ds:
+            _empty_element(ds, tag)
+    # 3. Remove ALL private tags
+    _remove_private_tags_except_siemens_csa(ds)
+    # 4. Generate a new SOPInstanceUID (required if modified)
+    ds.SOPInstanceUID = generate_uid()
+    ds.save_as(outfile)
+    return outfile
+
 def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_sort_dir=None, 
-                       no_convert=False, orientation='LPS', decompress=False, encode_dates=False):
+                       no_convert=False, orientation='LPS', decompress=False, 
+                       encode_dates=False, anonymization_level='moderate'):
     logging.info(f'Subject: {subject}')
     logging.info(f'DICOM directory: {dicom_dir}')
     logging.info(f'NIfTI output directory: {nifti_dir}')
-    sort_mode=str(sort_mode).lower()
-    if sort_mode not in ('none', 'link','copy','move'):
-        raise ValueError("sort_mode must be one of: 'none', 'link', 'copy', 'move'")
+    sort_mode=str(sort_mode).lower()[:4]
+    if sort_mode not in ('none', 'link', 'copy', 'move', 'anon'):
+        raise ValueError("sort_mode must be one of: 'none', 'link', 'copy', 'move', 'anonymize'")
     if sort_mode != 'none':
         if dicom_sort_dir is None:
             raise ValueError("If sort_mode is not 'none', dicom_sort_dir must be provided")
         os.makedirs(dicom_sort_dir, exist_ok=True)
         logging.info(f'Sorted DICOMs directory: {dicom_sort_dir}')
+        if sort_mode == 'anon' and encode_dates is False:
+            encode_dates = True
+            logging.info("Anonymization mode: setting encode_dates to True")
     # initialize attributes dataframe
     df = pd.DataFrame(columns=['Subject']+default_keys+['Nifti'])
     dicom_nifti_map = {}
@@ -309,7 +506,6 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
         all_dates = sorted(list(all_dates))
         for i, d in enumerate(all_dates):
             date_map.update({d:f't{i}' if encode_dates else d})
-        logging.info(f"date_map: {date_map}")        
     for uid_key in grouped_files.keys():
         try:
             dicom_files = grouped_files[uid_key]
@@ -329,8 +525,7 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
                 # Construct group directory name and create it
                 dest_dir = os.path.join(dicom_sort_dir, path_string)
                 os.makedirs(dest_dir, exist_ok=True)
-
-                # Fan-in files into the group dir (symlink/copy/move)
+                # Fan-in files into the group dir (symlink/copy/move/anon)
                 dest_paths = []
                 for i, src in enumerate(dicom_files):
                     # Prefix with an index to prevent name collisions across scanners/folders
@@ -349,11 +544,17 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
                         if not os.path.exists(dst):
                             # If destination exists (idempotent rerun), skip moving to avoid overwrite
                             shutil.move(src, dst)
+                    elif sort_mode == 'anon':
+                        if not os.path.exists(dst):
+                            # If destination exists (idempotent rerun), skip moving to avoid overwrite
+                            anonymize_dicomfile(src, dst, anonymization_level=anonymization_level)
                     dest_paths.append(dst)
                 dicom_files_for_conversion = dest_paths
             else:
                 dicom_files_for_conversion = dicom_files
             # ---- end sorting step ----
+            row = pd.Series(attributes)
+            row['Subject'] = subject    
             if no_convert is False:
                 output_prefix = os.path.join(nifti_dir, subject) + "_" + path_string
                 logging.info(f"Convert dicoms to nifti file {output_prefix}")
@@ -362,8 +563,6 @@ def run_dicom_to_nifti(subject, dicom_dir, nifti_dir, sort_mode='none', dicom_so
                         orientation=orientation,
                         quiet=True, json=True, decompress=decompress
                     )
-                row = pd.Series(attributes)
-                row['Subject'] = subject
                 row['Nifti'] = ' '.join(nifti_files)
                 dicom_nifti_map[nifti_files[0]] = dicom_files_for_conversion
             df = df.append(row, ignore_index=True)
