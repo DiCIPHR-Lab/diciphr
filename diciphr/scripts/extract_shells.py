@@ -47,7 +47,7 @@ def main(argv):
     args = parser.parse_args(argv)
     protocol_logging(PROTOCOL_NAME, directory=args.logdir, filename=args.logfile, debug=args.debug, create_dir=True)
     try:
-        if not args.shells or args.gaussian:
+        if not (args.shells or args.gaussian):
             raise ValueError("One of --shells or --gaussian must be provided.")
         output_dir = os.path.dirname(os.path.realpath(args.output))
         make_dir(output_dir, recursive=True, pass_if_exists=True)
