@@ -244,7 +244,8 @@ def track_density_image(trk_input, ref_img=None, output_filename=None):
     else:
         sft = load_tractogram(trk_input, 
                               ref_img if ref_img is not None else 'same', 
-                              bbox_valid_check=False)
+                              bbox_valid_check=False, 
+                              trk_header_check=False)
     # Convert to RASMM space (millimeters, RAS)
     sft.to_space(Space.RASMM)
     # Decide affine and shape
