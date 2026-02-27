@@ -5,7 +5,7 @@ import numpy as np
 import nibabel as nib
 from dipy.reconst import dti
 from dipy.core.gradients import gradient_table_from_bvals_bvecs
-from diciphr.nifti_utils import read_dwi, write_dwi, nifti_image
+from diciphr.nifti_utils import read_dwi, read_nifti, write_dwi, nifti_image
 from diciphr.diffusion import n4_bias_correct_dwi, has_gaussian_shells, extract_gaussian_shells 
 from diciphr.fernet.utils import erode_mask 
 from diciphr.fernet.free_water import grad_data_fit_tensor, clip_tensor_evals 
@@ -235,36 +235,42 @@ def run_fernet(dwi_filename, bvals_filename, bvecs_filename, mask_filename, outp
     logging.info("Read DWIs from disk...")
     dwi_img, bvals, bvecs = read_dwi(dwi_filename, bvals_filename, bvecs_filename)
     logging.info("Read mask image from disk...")
-    mask_img = nib.load(mask_filename)
-    
+    mask_img = read_nifti(mask_filename)
+    mask = np.asarray(mask_img.get_fdata(), dtype=bool)
+    if mask.sum() == 0:
+        raise ValueError("Brain mask has zero volume")
+    if wm_roi is not None:
+        logging.info("Read provided WM ROI")
+        wm_roi = np.asarray(read_nifti(wm_roi).get_fdata(), dtype=bool)    
+        if wm_roi.sum() == 0:
+            raise ValueError("Provided WM ROI has zero volume")
+    if csf_roi is not None:
+        logging.info("Read provided CSF ROI")
+        csf_roi = np.asarray(read_nifti(csf_roi).get_fdata(), dtype=bool)    
+        if csf_roi.sum() == 0:
+            raise ValueError("Provided CSF ROI has zero volume")
     if gaussian and not has_gaussian_shells(bvals):
-        raise ValueError("FERNET cannot be run on datasets with no b-values in the range 500-1500 s/mm2")
+        raise ValueError("FERNET cannot be run on datasets without b-values in the range 500-1500 s/mm2")
     if gaussian:
         dwi_img, bvals, bvecs = extract_gaussian_shells(dwi_img, bvals, bvecs)
     if bias_correct:
         dwi_img, bvals, bvecs = n4_bias_correct_dwi(dwi_img, bvals, bvecs, mask_img=mask_img)
-    
+    # Begin 
     bvals = bvals.flatten()
     bvecs = bvecs.transpose()
     affine = dwi_img.affine
     dwi = dwi_img.get_fdata()
-
-    mask = np.asarray(mask_img.get_fdata(), dtype=bool)
     dwi[np.logical_not(mask),...] = 0 
     
     logging.info("First, fit a standard tensor and calculate FA and MD" )
     tensor_data = estimate_tensor(dwi, mask, bvals, bvecs)
     FA, MD, TR, AX, RAD = calculate_scalars(tensor_data, mask)
 
-    if (wm_roi is not None) and (csf_roi is not None):
-        logging.info("Read ROIS corresponding to free water (CSF) and WM")
-        csf_roi = np.asarray(nib.load(csf_roi).get_fdata(), dtype=bool)
-        wm_roi = np.asarray(nib.load(wm_roi).get_fdata(), dtype=bool)    
-    else:
-        logging.info("Need CSF and WM rois.")
+    if (wm_roi is None) and (csf_roi is None):
+        logging.info("Determine CSF and WM rois.")
         if exclude_mask:
             logging.info("Exclude voxels in exclude mask .")
-            exclude_mask = np.asarray(nib.load(exclude_mask).get_fdata(), dtype=bool)
+            exclude_mask = np.asarray(read_nifti(exclude_mask).get_fdata(), dtype=bool)
         wm_roi, csf_roi = tissue_rois(mask, FA, TR, 
             erode_iterations=erode_iterations, 
             fa_threshold=fa_threshold, 
@@ -325,11 +331,11 @@ def fernet_correct_dwi(dwi_filename, bvals_filename, bvecs_filename, mask_filena
     affine = dwi_img.affine
     dwi = dwi_img.get_fdata()
     logging.info("Read mask image from disk...")
-    mask_img = nib.load(mask_filename)
+    mask_img = read_nifti(mask_filename)
     mask = np.asarray(mask_img.get_fdata(), dtype=bool)
     dwi[np.logical_not(mask),...] = 0 
     logging.info("Read volume fraction image from disk...")
-    vf_img = nib.load(volume_fraction_filename)
+    vf_img = read_nifti(volume_fraction_filename)
     fw_vf = vf_img.get_fdata()
     b0 = np.mean(dwi[...,bvals==0], axis=-1)
     tissue_vf = 1 - fw_vf
@@ -359,7 +365,7 @@ def fernet_regions(dwi_filename, bvals_filename, bvecs_filename, mask_filename, 
     affine = dwi_img.affine
     dwi = dwi_img.get_fdata()
     logging.info("Read mask image from disk...")
-    mask_img = nib.load(mask_filename)
+    mask_img = read_nifti(mask_filename)
     mask = np.asarray(mask_img.get_fdata(), dtype=bool)
     dwi[np.logical_not(mask),...] = 0 
     logging.info("First, fit a standard tensor and calculate FA and MD" )
@@ -367,7 +373,7 @@ def fernet_regions(dwi_filename, bvals_filename, bvecs_filename, mask_filename, 
     FA, MD, TR, AX, RAD = calculate_scalars(tensor_data, mask)
     if exclude_mask:
         logging.info("Exclude voxels in exclude mask .")
-        exclude_mask = np.asarray(nib.load(exclude_mask).get_fdata(), dtype=bool)
+        exclude_mask = np.asarray(read_nifti(exclude_mask).get_fdata(), dtype=bool)
     logging.info("Erode mask {} times".format(erode_iterations))
     logging.info("Threshold FA at {} and TR at {}".format(fa_threshold, tr_threshold))
     wm_roi, csf_roi = tissue_rois(mask, FA, TR, 
