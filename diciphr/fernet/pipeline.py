@@ -6,7 +6,7 @@ import nibabel as nib
 from dipy.reconst import dti
 from dipy.core.gradients import gradient_table_from_bvals_bvecs
 from diciphr.nifti_utils import read_dwi, read_nifti, write_dwi, nifti_image
-from diciphr.diffusion import n4_bias_correct_dwi, has_gaussian_shells, extract_gaussian_shells 
+from diciphr.diffusion import n4_bias_correct_dwi, has_gaussian_shells, extract_gaussian_shells, round_bvals 
 from diciphr.fernet.utils import erode_mask 
 from diciphr.fernet.free_water import grad_data_fit_tensor, clip_tensor_evals 
 
@@ -234,6 +234,7 @@ def run_fernet(dwi_filename, bvals_filename, bvecs_filename, mask_filename, outp
     
     logging.info("Read DWIs from disk...")
     dwi_img, bvals, bvecs = read_dwi(dwi_filename, bvals_filename, bvecs_filename)
+    bvals = round_bvals(bvals)
     logging.info("Read mask image from disk...")
     mask_img = read_nifti(mask_filename)
     mask = np.asarray(mask_img.get_fdata(), dtype=bool)
