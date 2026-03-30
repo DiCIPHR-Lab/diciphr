@@ -274,7 +274,7 @@ class AntsRegistration():
         self._build_cmd()
         return ExecCommand(self.cmd).run()
 
-def ants_apply_transforms(input_filename, output_filename, reference_filename, transform_filenames, invert=[], interpolation='Linear', bg_value=0):
+def ants_apply_transforms(input_filename, output_filename, reference_filename, transforms=[], invert=[], interpolation='Linear', bg_value=0, d=3, e=0):
     '''
     Runs antsApplyTransforms 
 
@@ -307,19 +307,21 @@ def ants_apply_transforms(input_filename, output_filename, reference_filename, t
     -------
     None
     '''
-    transform_filenames = force_to_list(transform_filenames)
+    transforms = force_to_list(transforms)
     if len(invert) == 0:
-        invert = [ 0 for tf in transform_filenames ] 
-    transform_string = ','.join( [tf if i==0 else '[{},1]'.format(tf) for tf, i in zip(transform_filenames, invert) ])
+        invert = [ 0 for tf in transforms ] 
     cmd = [ 'antsApplyTransforms', 
+                '-d', str(d), '-e', str(e), 
                 '-i', input_filename, 
                 '-o', output_filename, 
-                '-r', reference_filename, 
-                '-t', transform_string,
-                '-n', interpolation, 
+                '-r', reference_filename ]
+    if len(transforms) > 0:
+        transform_strings = [f'[{tf},1]' if i else str(tf) for tf, i in zip(transforms, invert)]
+        cmd.extend(['-t'])
+        cmd.extend(transform_strings)
+    cmd.extend(['-n', interpolation, 
                 '-f', str(bg_value),
-                '-v', '1' 
-    ]
+                '--float', '-v', '1'])
     ExecCommand(cmd).run() 
 
 def read_ants_affine_transform(transform_file):
