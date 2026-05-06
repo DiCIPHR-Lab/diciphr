@@ -73,8 +73,7 @@ def run_track_density_image(input_trackfile, output_tdifile, reference_nifti, vo
         logging.info(f'Resample reference image to {voxel} isotropic')
         ref_im = resample_image(ref_im, (voxel, voxel, voxel), interp='nearest')
     logging.info('Calculate the TDI image')
-    streamlines = load_tractogram(input_trackfile, 'same')
-    tdi_im = track_density_image(streamlines.streamlines, ref_im)
+    tdi_im = track_density_image(input_trackfile, ref_im)
     tdi_im.to_filename(output_tdifile)
     logging.info(f'Saved file {output_tdifile}')
    

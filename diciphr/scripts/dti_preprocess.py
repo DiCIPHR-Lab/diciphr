@@ -1,15 +1,17 @@
 #! /usr/bin/env python
 
 import os, sys, logging, time
-from diciphr.utils import check_inputs, make_dir, protocol_logging, DiciphrArgumentParser
+from diciphr.utils import ( check_inputs, make_dir, protocol_logging, 
+               dwi_filenames_from_directory, DiciphrArgumentParser )
 from diciphr.nifti_utils import ( read_nifti, write_nifti, read_dwi, write_dwi,
                mask_nifti, json_files_from_niftis, 
-               resample_image, is_nifti_file, split_image )
+               resample_image, split_image )
 from diciphr.diffusion import ( concatenate_dwis, round_bvals, extract_b0, 
                extract_shells_from_multishell_dwi, extract_gaussian_shells, 
                mppca_denoise, gibbs_unringing, n4_bias_correct_dwi, 
-               prepare_acqparams_json, prepare_acqparams_nojson, 
-               phase_enc_from_json, synb0_disco, run_topup_post_synb0, run_topup, 
+               prepare_acqparams_json, prepare_acqparams_nojson, unique_acqparams, 
+               phase_enc_from_json, synb0_disco, run_topup_post_synb0, 
+               pad_image_for_topup, crop_image_post_topup, run_topup, 
                apply_topup, fsl_eddy, fsl_eddy_post_topup, save_eddy_text, 
                estimate_tensor, TensorScalarCalculator )
 from diciphr.registration import ants_registration_dti_t1
@@ -140,168 +142,185 @@ def buildArgsParser():
 def main(argv):
     parser = buildArgsParser()
     args = parser.parse_args(argv)
-    if args.output_dir is None:
-        args.output_dir = os.path.join(os.getcwd(), args.subject, 'DTI_Preprocess')
-    make_dir(args.output_dir, recursive=True, pass_if_exists=True)
-    protocol_logging(PROTOCOL_NAME, directory=args.logdir or args.output_dir, 
-                     filename=args.logfile, debug=args.debug, create_dir=True)
     try:
-        dwi_filenames = []
-        for d in args.dwi_filenames:
-            d = os.path.realpath(d)
-            if os.path.isdir(d):
-                dwi_filenames.extend(dwi_filenames_from_directory(d))
-            elif os.path.exists(d):
-                dwi_filenames.append(d)
-            else:
-                raise FileNotFoundError(f"Input path does not exist: {d}")
-        check_inputs(*dwi_filenames, nifti=True)
-        args.dwi_filenames = dwi_filenames
-        if args.mask:
-            check_inputs(args.mask, nifti=True)
-        if args.bias_corr:
-            args.bias_iterations = list(map(int, args.bias_iterations.split(',')))
-        if args.bias_mask:
-            check_inputs(args.bias_mask, nifti=True)
-        if args.topup:
-            try:
-                check_inputs(args.topup, nifti=True)
-                logging.info('Nifti reverse-phase-encoding-direction file found')
-            except:
-                # User provided topup prefix 
-                check_inputs(args.topup+'_fieldcoef.nii.gz', args.topup+'_movpar.txt')
-                if args.index:
-                    check_inputs(args.index)
-                elif not args.no_moco:
-                    check_inputs(args.topup+'_index.txt')
-                if args.acqparams:
-                    check_inputs(args.acqparams)
-                else:
-                    check_inputs(args.topup+'_acqparams.txt')
-                logging.info('Outputs of a previous run of FSL topup found')
-        run_dti_preprocess(args.subject, args.output_dir, args.dwi_filenames, mask=args.mask, t1=args.t1, 
-                        t1_mask=args.t1_mask, run_synb0=args.run_synb0, topup=args.topup, config=args.config, 
-                        index=args.index, acqparams=args.acqparams, extract_shell=args.extract_shell, 
-                        normalize=args.normalize, no_json=args.no_json, no_moco=args.no_moco, denoise=args.denoise, 
-                        gibbs=args.gibbs, acquisition_slicetype=args.acquisition_slicetype, bias_corr=args.bias_corr, 
-                        bias_mask=args.bias_mask, bias_iterations=args.bias_iterations, 
-                        bias_threshold=args.bias_threshold, resample=args.resample, phase_encs=args.phase_encs, 
-                        readout_time=args.readout_time, replace_outliers=args.replace_outliers)
+        run_dti_preprocess(args)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
 
-def unique_acqparams(acqparams_list):
-    uniq = set()
-    for acqparams_line in acqparams_list:
-        acq = acqparams_line[:3]
-        uniq.add(tuple(acq))
-    return len(uniq)
+def initialize_and_validate_args(args):
+    """
+    Normalize arguments, resolve inputs, perform sanity checks,
+    set up logging, and log configuration.
+    Returns
+    -------
+    args : argparse.Namespace
+        Normalized and validated arguments
+    """
+    # Resolve output directory 
+    if args.output_dir is None:
+        args.output_dir = os.path.join(
+            os.getcwd(), args.subject, "DTI_Preprocess"
+        )
+    make_dir(args.output_dir, recursive=True, pass_if_exists=True)
 
-def dwi_filenames_from_directory(directory):
-    all_files = sorted(os.listdir(directory))
-    bval_files = list(filter(lambda fn: fn.endswith('.bval'), all_files))
-    if len(bval_files) == 0:
-        raise FileNotFoundError('No diffusion .bval files found in directory')
-    nifti_files = []
-    for bv in bval_files:
-        for ext in ['nii.gz', 'nii', 'hdr']:
-            fn = os.path.join(directory, bv[:-4]+ext)
-            logging.info(fn)
-            if is_nifti_file(fn):
-                nifti_files.append(fn)
-                break 
-            raise FileNotFoundError('Nifti file corresponding to bval file does not exist')
-    return nifti_files
+    # Normalize basic args 
+    if args.extract_shell and 0 not in args.extract_shell:
+        args.extract_shell = [0] + list(args.extract_shell)
+    args.mask_method = args.mask_method.lower()
+    if args.mask_method == "bet":
+        args.mask_kwargs = {"erode_iterations": 1, "f": 0.2, "g": 0.0}
+        args.bias_mask_kwargs = {"erode_iterations": 0, "f": 0.2, "g": 0.0}
+    elif args.mask_method == "synthstrip":
+        args.mask_kwargs = {"border": 0, "fill": 0, "no_csf": False}
+        args.bias_mask_kwargs = {"border": 2, "fill": 0, "no_csf": False}
+    else:
+        raise ValueError(f"Mask method not recognized: {args.mask_method}")
 
-def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[], 
-           bval_filenames=[], bvec_filenames=[], mask=None, t1=None, t1_mask=None, 
-           run_synb0=False, topup=None, config=None, acqparams=None, index=None, 
-           extract_shell=None, normalize=False, no_moco=False, no_json=False, 
-           denoise=False, gibbs=False, acquisition_slicetype='axial', 
-           replace_outliers=False, phase_encs=[], readout_time=0.062, 
-           bias_corr=True, bias_mask=None, mask_method='synthstrip', 
-           bias_iterations=[50,50,50,50], bias_threshold=0.001, resample=0):
-    
-    # log some info
-    logging.info(f'subject: {subject}')
-    logging.info(f'dwi_filenames: {dwi_filenames}')
-    logging.info(f'output_dir: {output_dir}')
-    if resample > 0: 
-        logging.info(f'resample: {resample}')
+    # Initialize logging 
+    protocol_logging(
+        PROTOCOL_NAME, directory=(args.logdir or args.output_dir),
+        filename=args.logfile, debug=args.debug, create_dir=True
+    )
+
+    # Resolve DWI filenames 
+    dwi_filenames = []
+    for d in args.dwi_filenames:
+        d = os.path.realpath(d)
+        if os.path.isdir(d):
+            dwi_filenames.extend(dwi_filenames_from_directory(d))
+        elif os.path.exists(d):
+            dwi_filenames.append(d)
+        else:
+            raise FileNotFoundError(f"Input path does not exist: {d}")
+    check_inputs(*dwi_filenames, nifti=True)
+    args.dwi_filenames = dwi_filenames
+
+    # Optional input checks 
+    if args.mask:
+        check_inputs(args.mask, nifti=True)
+    if args.bias_mask:
+        check_inputs(args.bias_mask, nifti=True)
+    if args.bias_corr:
+        args.bias_iterations = list(map(int, args.bias_iterations.split(",")))
+
+    # Topup input validation
+    if args.topup:
+        # user supplied topup prefix
+        check_inputs(
+            args.topup + "_fieldcoef.nii.gz",
+            args.topup + "_movpar.txt",
+        )
+        if args.index:
+            check_inputs(args.index)
+        elif not args.no_moco:
+            check_inputs(args.topup + "_index.txt")
+        if args.acqparams:
+            check_inputs(args.acqparams)
+        else:
+            check_inputs(args.topup + "_acqparams.txt")
+        logging.info("Previous FSL topup outputs found")
+
+    # ---------- Log configuration ----------
+    logging.info(f"subject: {args.subject}")
+    logging.info(f"dwi_filenames: {args.dwi_filenames}")
+    logging.info(f"output_dir: {args.output_dir}")
+    if args.resample > 0:
+        logging.info(f"resample: {args.resample}")
     else:
-        logging.info('Not resampling data.')
-    if mask:
-        logging.info(f'Mask: {mask}')
-    if t1:
-        logging.info(f'T1: {t1}')
-        t1_im = read_nifti(t1)
-    if t1_mask:
-        logging.info(f'T1 mask: {t1_mask}')
-        t1_mask_im = read_nifti(t1_mask)
-    else:
-        t1_mask_im = None
-    if topup:
-        logging.info(f'Topup: {topup}')
-    if extract_shell:
-        if 0 not in extract_shell:
-            extract_shell = [0]+extract_shell
-        logging.info(f'Extract shell: {extract_shell}')    
-    if no_moco: 
-        logging.info('Skipping motion correction step.')
-    if not denoise:
-        logging.info('Skipping denoising step.')
-    
-    mask_method = mask_method.lower()
-    if mask_method == 'bet':
-        mask_kwargs = {'erode_iterations':1, 'f':0.2, 'g':0.0}
-        bias_mask_kwargs = {'erode_iterations':0, 'f':0.2, 'g':0.0} 
-    elif mask_method == 'synthstrip':
-        mask_kwargs = {'border':0, 'fill':0, 'no_csf':False}
-        bias_mask_kwargs = {'border':2, 'fill':0, 'no_csf':False}
-    else:
-        raise ValueError(f'Mask method not recognized: {mask_method}')
-    
-    # Output filenames
-    dwi_processed_filename = os.path.join(output_dir, f"{subject}_DWI_preprocessed.nii.gz")
-    mask_filename = os.path.join(output_dir, f"{subject}_tensor_mask.nii.gz")
-    tensor_filename = os.path.join(output_dir, f"{subject}_tensor.nii.gz")
-    fa_filename = os.path.join(output_dir, f"{subject}_tensor_FA.nii.gz")
-    tr_filename = os.path.join(output_dir, f"{subject}_tensor_TR.nii.gz")        
-    md_filename = os.path.join(output_dir, f"{subject}_tensor_MD.nii.gz")        
-    ax_filename = os.path.join(output_dir, f"{subject}_tensor_AX.nii.gz")        
-    rad_filename = os.path.join(output_dir, f"{subject}_tensor_RAD.nii.gz")        
-    b0_filename = os.path.join(output_dir, f"{subject}_B0.nii.gz")    
-    eddy_text_prefix = os.path.join(output_dir, f"{subject}")   
-    bias_filename = os.path.join(output_dir, f"{subject}_bias_field.nii.gz")
-    topup_base = os.path.join(output_dir, f"{subject}_topup")
-    registration_prefix = os.path.join(output_dir, f"{subject}")
-    synb0_output_file = os.path.join(output_dir, f"{subject}_synb0.nii.gz")
-    
-    logging.info('Begin Protocol')
-    
-    # 1. Load dwi_filenames
+        logging.info("Not resampling data")
+
+    if args.mask:
+        logging.info(f"Mask: {args.mask}")
+    if args.t1:
+        logging.info(f"T1: {args.t1}")
+    if args.t1_mask:
+        logging.info(f"T1 mask: {args.t1_mask}")
+    if args.topup:
+        logging.info(f"Topup: {args.topup}")
+    if args.extract_shell:
+        logging.info(f"Extract shell: {args.extract_shell}")
+    if args.no_moco:
+        logging.info("Skipping motion correction")
+    if not args.denoise:
+        logging.info("Skipping denoising")
+    logging.info(f"Masking method: {args.mask_method}")
+    logging.debug(f"args: {args}")
+    return args
+
+def build_output_filenames(args):
+    logging.debug(f"build_output_filenames")
+    outputs = {}
+    prefix = os.path.join(args.output_dir, args.subject)
+    outputs['dwi_processed_filename'] = f"{prefix}_DWI_preprocessed.nii.gz"
+    outputs['mask_filename'] = f"{prefix}_tensor_mask.nii.gz"
+    outputs['tensor_filename'] = f"{prefix}_tensor.nii.gz"
+    outputs['fa_filename'] = f"{prefix}_tensor_FA.nii.gz"
+    outputs['tr_filename'] = f"{prefix}_tensor_TR.nii.gz"
+    outputs['md_filename'] = f"{prefix}_tensor_MD.nii.gz"
+    outputs['ax_filename'] = f"{prefix}_tensor_AX.nii.gz"       
+    outputs['rad_filename'] = f"{prefix}_tensor_RAD.nii.gz"    
+    outputs['b0_filename'] = f"{prefix}_B0.nii.gz"
+    outputs['eddy_text_prefix'] = f"{prefix}"  
+    outputs['bias_filename'] = f"{prefix}_bias_field.nii.gz"
+    outputs['topup_base'] = f"{prefix}_topup"
+    outputs['registration_prefix'] = f"{prefix}"
+    outputs['synb0_output_file'] = f"{prefix}_synb0.nii.gz"
+    logging.debug(f"outputs: {outputs}")
+    return outputs
+
+def load_inputs(args):
+    logging.debug("load_inputs")
     logging.info('Load dwi_filenames')
     dwi_ims = []
     bval_arrays = []
     bvec_arrays = []
-    for dwifn in dwi_filenames:
+    for dwifn in args.dwi_filenames:
         _d, _b, _v = read_dwi(dwifn, force=True)
         dwi_ims.append(_d)
         bval_arrays.append(round_bvals(_b))
         bvec_arrays.append(_v)
-    if mask:
+    if args.mask:
         logging.info('Load user provided mask')
-        mask_im = read_nifti(mask)
-    if bias_mask:
+        mask_im = read_nifti(args.mask)
+    else:
+        mask_im = None 
+    if args.bias_mask:
         logging.info('Load user provided bias weight mask')
-        bias_mask_im = read_nifti(bias_mask)
-    
-    # 2. Get acquisition parameters from json files or from command line 
-    if no_json:
+        bias_mask_im = read_nifti(args.bias_mask)
+    else:
+        bias_mask_im = None
+    if args.t1 or args.t1_mask:
+        logging.info('Load optional T1 inputs')
+    if args.t1:
+        t1_im = read_nifti(args.t1)
+    else:
+        t1_im = None 
+    if args.t1_mask:
+        t1_mask_im = read_nifti(args.t1_mask)
+    else:
+        t1_mask_im = None    
+    shapes = [im.shape[:3] for im in dwi_ims]
+    if len(set(shapes)) != 1:
+        raise ValueError(f"All DWI inputs must have identical spatial shape; got {shapes}")    
+    if mask_im is not None and mask_im.shape[:3] != shapes[0]:
+        raise ValueError("Mask spatial shape does not match DWI inputs")  
+    logging.debug(f"dwi_ims: {dwi_ims}")
+    logging.debug(f"bval_arrays: {bval_arrays}")
+    logging.debug(f"bvec_arrays: {bvec_arrays}")
+    logging.debug(f"mask_im: {mask_im}")
+    logging.debug(f"bias_mask_im: {bias_mask_im}")
+    logging.debug(f"t1_im: {t1_im}")
+    logging.debug(f"t1_mask_im: {t1_mask_im}")
+    return dwi_ims, bval_arrays, bvec_arrays, mask_im, bias_mask_im, t1_im, t1_mask_im 
+
+def phase_enc_and_filter_dwis(args, dwi_ims, bval_arrays):
+    logging.debug("phase_enc_and_filter_dwis")
+    phase_encs = args.phase_encs
+    if args.no_json:
         json_files = None
     else:
-        json_files = json_files_from_niftis(dwi_filenames)
+        json_files = json_files_from_niftis(args.dwi_filenames)
     if json_files:
         logging.info("Get acquisition parameters from .json files")
         all_acqparams = [prepare_acqparams_json(fn, dwi_im) for fn, dwi_im in zip(json_files, dwi_ims)]
@@ -310,204 +329,444 @@ def run_dti_preprocess(subject, output_dir, dwi_filenames, json_filenames=[],
         logging.debug(f'phase_encs: {phase_encs}')
     else:
         logging.info("Get acquisition parameters without .json files")
-        if len(phase_encs) != len(dwi_filenames):
+        if len(phase_encs) != len(args.dwi_filenames):
             if len(phase_encs) == 1:
-                phase_encs = [phase_encs[0] for fn in dwi_filenames]
+                phase_encs = [phase_encs[0] for fn in args.dwi_filenames]
             elif len(phase_encs) > 1:
                 raise ValueError("Number of phase encoding dirs does not match or could not be broadcast to number of DWI files")
         if len(phase_encs) > 0:
             logging.info("Get acquisition parameters without .json files")
-        all_acqparams = [prepare_acqparams_nojson(readout_time, phase_enc) for phase_enc in phase_encs]
+        all_acqparams = [prepare_acqparams_nojson(args.readout_time, phase_enc) for phase_enc in phase_encs]
         logging.debug(f'all_acqparams: {all_acqparams}')
     if len(phase_encs) == 0:
-        if run_synb0 or t1:
+        if args.run_synb0 or args.t1:
             raise ValueError('To run synb0 or register T1 image, phase encoding direction must be provided by .json file or by -P argument')        
-    
     # Array of which DWI images to keep in output 
     keep_dwis = [len(bval[bval>0])>=6 and len(bval[bval==0])>=1 for bval in bval_arrays]
-    for fn, k in zip(dwi_filenames, keep_dwis):
+    for fn, k in zip(args.dwi_filenames, keep_dwis):
         if k or unique_acqparams(all_acqparams) == 1:
             logging.info(f"DWI {fn} will be pre-processed")
         else:
             logging.info(f"DWI {fn} will be used for topup and discarded")
     if not any(keep_dwis):
         raise ValueError("None of DWI inputs have at least 6 weighted volumes and at least 1 unweighted volume. Input is invalid")
+    logging.debug(f"phase_encs: {phase_encs}")
+    logging.debug(f"all_acqparams: {all_acqparams}")
+    logging.debug(f"keep_dwis: {keep_dwis}")
+    return phase_encs, all_acqparams, keep_dwis
+
+def denoising_stage(args, dwi_ims, bval_arrays, bvec_arrays, keep_dwis):
+    """
+    Apply denoising and/or Gibbs unringing to DWIs marked as kept.
+
+    Returns
+    -------
+    denoised_ims : list of nibabel.Nifti1Image
+        One entry per kept DWI, in original order.
+    """
+    logging.debug("denoising_stage")
+    denoised_ims = []
+    if not args.denoise:
+        logging.info("Skipping data denoising.")
+    if not args.gibbs:
+        logging.info("Skipping Gibbs unringing.")
+    start_time = time.time()
+    for dwi_im, bvals, bvecs, keep in zip(dwi_ims, bval_arrays, bvec_arrays, keep_dwis):
+        if not keep:
+            continue
+        out_im = dwi_im
+        if args.denoise:
+            out_im = mppca_denoise(
+                out_im, bvals, bvecs,
+                patch_radius=2,
+                return_diff=False
+            )
+        if args.gibbs:
+            out_im = gibbs_unringing(
+                out_im,
+                acquisition_slicetype=args.acquisition_slicetype,
+                n_points=3,
+                num_processes=1,
+                return_diff=False
+            )
+        denoised_ims.append(out_im)
+    if args.denoise or args.gibbs:
+        elapsed = (time.time() - start_time) / 60.0
+        logging.info("Done denoising. Elapsed time {0:0.2f} minutes".format(elapsed))
+    logging.debug(f"denoised_ims: {denoised_ims}")
+    return denoised_ims
+
+def topup_stage(args, dwi_ims, bval_arrays, bvec_arrays, all_acqparams, 
+                    keep_dwis, outputs, mask_im, t1_im, t1_mask_im):
+    """
+    Run topup before denoising. Pads DWI images to even dimensions, saves reference images for later
+    cropping, and runs or loads topup as needed.
+    """
+    logging.debug("topup_stage")
+    # Save references before padding
+    reference_im = dwi_ims[0]
     
-    # 3. Topup before denoising
+    # Pad DWIs for topup
+    dwi_ims = [pad_image_for_topup(im) for im in dwi_ims]
+    topup = args.topup
+    acqparams = args.acqparams
+    index = args.index
+    unwarped_b0_im = None
+    
+    if mask_im is not None:
+        # Pad here if user-provided, because if not, mask
+        #  will be estimated on padded grid by eddy stage 
+        mask_im = pad_image_for_topup(mask_im)
+        
+    # Case 1: user-provided topup
     if topup:
-        # Topup prefix was provided at command line and existence of files has been checked 
         logging.info("Using field estimate from previously run topup")
+
         if not acqparams:
-            acqparams = topup+'_acqparams.txt'
+            acqparams = topup + "_acqparams.txt"
         if not index:
-            index = topup+'_index.txt'
-        logging.info("Creating undistorted B0 image with applytopup on first B0 to estimate a brain mask")
-        unwarped_b0_im = apply_topup(extract_b0(dwi_ims[0], bval_arrays[0], first=True), topup, acqparams)
+            index = topup + "_index.txt"
+
+        b0_im = extract_b0(dwi_ims[0], bval_arrays[0], first=True)
+        unwarped_b0_im = apply_topup(b0_im, topup, acqparams)
+
+    # Case 2: multiple phase-encoding directions
     elif unique_acqparams(all_acqparams) > 1:
-        # run topup
         logging.info("Run topup")
-        topup = run_topup(dwi_ims, bval_arrays, bvec_arrays, all_acqparams, topup_base, keep_dwis)
-        acqparams = topup+'_acqparams.txt'
-        index = topup+'_index.txt'
-        unwarped_b0_im = read_nifti(topup+'_b0u.nii.gz')
+        topup = run_topup(
+            dwi_ims, bval_arrays, bvec_arrays, all_acqparams, 
+            outputs["topup_base"], keep_dwis
+        )
+        acqparams = topup + "_acqparams.txt"
+        index = topup + "_index.txt"
+        unwarped_b0_im = read_nifti(topup + "_b0u.nii.gz")
         if len(unwarped_b0_im.shape) == 4:
             unwarped_b0_im = split_image(unwarped_b0_im)[0]
-    elif unique_acqparams(all_acqparams) == 1:
-        # When there is only one group of phase encoding directions, but multiple DWI images, concatenate them BEFORE denoising
-        dwi_ims, bval_arrays, bvec_arrays = [[x] for x in concatenate_dwis(*zip(dwi_ims, bval_arrays, bvec_arrays))]
-        keep_dwis = [True]
-        
-        if run_synb0:
-            logging.info("Run SynB0-Disco")
-            synb0_img = synb0_disco(dwi_ims[0], bval_arrays[0], all_acqparams[0], t1_im, t1_mask=t1_mask_im)
-            write_nifti(synb0_output_file, synb0_img)
-   
-            logging.info('Run topup with SynB0-Disco configuration file')
-            run_topup_post_synb0(dwi_ims[0], bval_arrays[0], bvec_arrays[0], synb0_img, all_acqparams[0], 
-                topup_base)
-            topup = topup_base
-            acqparams = topup+'_acqparams.txt'
-            index = topup+'_index.txt'
-            unwarped_b0_im = apply_topup(extract_b0(dwi_ims[0], bval_arrays[0], first=True), topup, acqparams)
-        
-    # 4. Denoising
-    if denoise:
-        logging.info("Denoising DWI Volume(s) with MP-PCA")
-        start_time = time.time()
-        for i, (dwi_im, bvals, bvecs, keep) in enumerate(zip(dwi_ims, bval_arrays, bvec_arrays, keep_dwis)):
-            if keep:
-                dwi_im = mppca_denoise(dwi_im, bvals, bvecs, patch_radius=2, return_diff=False)
-                dwi_ims[i] = dwi_im 
-        end_time = time.time()
-        logging.info("Done Denoising. Elapsed time {0:0.2f} minutes".format((end_time - start_time)/60.))
-    else:
-        logging.info("Skipping data denoising.")
 
-    # 5. Gibbs Unringing
-    if gibbs:
-        logging.info("Gibbs unringing")
-        start_time = time.time()
-        for i, (dwi_im, bvals, bvecs, keep) in enumerate(zip(dwi_ims, bval_arrays, bvec_arrays, keep_dwis)):
-            if keep:
-                dwi_im = gibbs_unringing(dwi_im, acquisition_slicetype=acquisition_slicetype, n_points=3, num_processes=1, return_diff=False)
-                dwi_ims[i] = dwi_im 
-        end_time = time.time()
-        logging.info("Done Gibbs unringing. Elapsed time {0:0.2f} minutes".format((end_time - start_time)/60.))
+    # Case 3: single phase-encoding direction
+    elif args.run_synb0:
+        logging.info("Run SynB0-Disco")
+        synb0_img = synb0_disco(
+            dwi_ims[0], bval_arrays[0], all_acqparams[0], t1_im, t1_mask=t1_mask_im
+        )
+        write_nifti(outputs["synb0_output_file"], synb0_img)
+        # Concatenate DWIs here so that index is created with the correct number 
+        dwi_concat, bvals_concat, bvecs_concat = concatenate_dwis(
+                *zip(dwi_ims, bval_arrays, bvec_arrays), keep_dwis=keep_dwis
+        )
+        run_topup_post_synb0(
+            dwi_concat, bvals_concat, bvecs_concat, synb0_img, 
+            all_acqparams[0], outputs["topup_base"],
+        )
+        topup = outputs["topup_base"]
+        acqparams = topup + "_acqparams.txt"
+        index = topup + "_index.txt"
+        b0_im = extract_b0(dwi_ims[0], bval_arrays[0], first=True)
+        unwarped_b0_im = apply_topup(b0_im, topup, acqparams)
+    logging.debug(f"dwi_ims: {dwi_ims}")
+    logging.debug(f"reference_im: {reference_im}")
+    logging.debug(f"topup: {topup}")
+    logging.debug(f"acqparams: {acqparams}")
+    logging.debug(f"index: {index}")
+    logging.debug(f"unwarped_b0_im: {unwarped_b0_im}")
+    return dwi_ims, reference_im, topup, acqparams, index, unwarped_b0_im, mask_im
+
+def fill_denoised_dwis(padded_dwi_ims, denoised_ims, keep_dwis, reference_im):
+    """
+    Insert denoised data into the non-padded region of padded DWI images.
+
+    Parameters
+    ----------
+    padded_dwi_ims : list of nibabel.Nifti1Image
+        DWIs after pad_image_for_topup
+    denoised_ims : list of nibabel.Nifti1Image
+        Denoised DWIs in original (unpadded) space, one per kept DWI
+    keep_dwis : list of bool
+        Flags indicating which DWIs were denoised
+    reference_im : nibabel.Nifti1Image
+        Original unpadded reference image used to define non-padded region
+
+    Returns
+    -------
+    out_dwi_ims : list of nibabel.Nifti1Image
+        Padded DWIs with denoised data written into non-padded region
+    """
+    logging.debug("fill_denoised_dwis")
+    out_dwi_ims = []
+    j = 0
+    for padded_im, keep in zip(padded_dwi_ims, keep_dwis):
+        if keep:
+            # Write denoised data into non-padded region
+            out_im = pad_image_for_topup(
+                denoised_ims[j],
+                reference_img=padded_im,
+            )
+            j += 1
+        else:
+            out_im = padded_im
+        out_dwi_ims.append(out_im)
+    logging.debug(f"out_dwi_ims: {out_dwi_ims}")
+    return out_dwi_ims
+
+def concatenate_and_extract_shells(args, dwi_ims, bval_arrays, bvec_arrays, keep_dwis):
+    """
+    Concatenate kept DWIs and optionally extract shells.
+    """
+    logging.debug("concatenate_and_extract_shells")
+    dwi_tuples = [(d, b, v) for d, b, v in zip(dwi_ims, bval_arrays, bvec_arrays)]
+    dwi_proc_im, bvals, bvecs = concatenate_dwis(*dwi_tuples, keep_dwis=keep_dwis)
+    if args.extract_shell:
+        logging.info(f"Extract shells from multishell DWI: {args.extract_shell}")
+        dwi_proc_im, bvals, bvecs = extract_shells_from_multishell_dwi(
+            dwi_proc_im, bvals, bvecs, args.extract_shell
+        )
+    logging.debug(f"dwi_proc_im: {dwi_proc_im}")
+    logging.debug(f"bvals: {bvals}")
+    logging.debug(f"bvecs: {bvecs}")
+    return dwi_proc_im, bvals, bvecs
+
+def eddy_stage(args, dwi_proc_im, bvals, bvecs, mask_im, reference_im, outputs,  
+                   topup, acqparams, index, unwarped_b0_im):
+    """
+    Run eddy motion/distortion correction stage.
+    """
+    logging.debug("eddy_stage")
+    if args.no_moco:
+        logging.info("Skipping motion correction") 
+        dwi_proc_im = crop_image_post_topup(dwi_proc_im, reference_im)
+        return dwi_proc_im, bvals, bvecs, mask_im
+    start_time = time.time()
+    # Case 1: eddy with topup
+    if topup:
+        if mask_im is None:
+            mask_im = mask_nifti(unwarped_b0_im, method=args.mask_method,
+                **args.mask_kwargs)
+        logging.info("Run eddy with topup")
+        dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy_post_topup(
+            dwi_proc_im, bvals, bvecs, topup, acqparams, index, mask_im,
+            unwarped_b0_im=unwarped_b0_im, replace_outliers=args.replace_outliers)
+    # Case 2: eddy without topup
     else:
-        logging.info("Skipping Gibbs unringing.")
+        if mask_im is None:
+            b0_im = extract_b0(dwi_proc_im, bvals, first=True)
+            mask_im = mask_nifti(b0_im, method=args.mask_method,
+                **args.bias_mask_kwargs)
+        logging.info("Run eddy without topup")
+        dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy(
+            dwi_proc_im, bvals, bvecs, mask_im, readout_time=args.readout_time,
+            replace_outliers=args.replace_outliers)
+    save_eddy_text(outputs["eddy_text_prefix"], eddy_text_outputs)
+    elapsed = (time.time() - start_time) / 60.0
+    logging.info(
+        "Done eddy. Elapsed time {0:0.2f} minutes".format(elapsed)
+    )
+    # Crop back to original (pre-padding) shape exactly once
+    dwi_proc_im = crop_image_post_topup(dwi_proc_im, reference_im)
+    mask_im = crop_image_post_topup(mask_im, reference_im)
+    logging.debug(f"dwi_proc_im: f{dwi_proc_im}")
+    logging.debug(f"bvals: {bvals}")
+    logging.debug(f"bvecs: {bvecs}")
+    logging.debug(f"mask_im: {mask_im}")
+    return dwi_proc_im, bvals, bvecs, mask_im
+
+def resampling_stage(args, dwi_proc_im, mask_im, bias_mask_im):    
+    """
+    Resample DWI and associated masks to isotropic resolution.
+    """  
+    logging.debug("resampling_stage")
+    if args.resample <= 0:
+        return dwi_proc_im, mask_im, bias_mask_im
+    spacing = [args.resample] * 3
+    logging.info("Resample image to {} x {} x {}".format(*spacing))
+    dwi_proc_im = resample_image(dwi_proc_im, spacing, interp="Linear")
+    if bias_mask_im is not None:
+        logging.info("Resample bias_mask to {} x {} x {}".format(*spacing))
+        bias_mask_im = resample_image(bias_mask_im, spacing, 
+                                      interp="NearestNeighbor")
+    if mask_im is not None:
+        logging.info("Resample brain mask to {} x {} x {}".format(*spacing))
+        mask_im = resample_image(mask_im, spacing, interp="NearestNeighbor")
+    logging.debug(f"dwi_proc_im: {dwi_proc_im}")
+    logging.debug(f"mask_im: {mask_im}")
+    logging.debug(f"bias_mask_im: {bias_mask_im}")
+    return dwi_proc_im, mask_im, bias_mask_im
+
+def bias_correction_stage(args, dwi_proc_im, bvals, bvecs, mask_im, 
+                              bias_mask_im, outputs):
+    """
+    Run N4 bias field correction on the DWI.
+    """
+    logging.debug("bias_correction_stage")
+    if not args.bias_corr:
+        return dwi_proc_im, None, mask_im
+    # Case 1: no user-provided bias mask
+    if bias_mask_im is None:
+        if mask_im is None:
+            logging.info(f"Mask B0 with {args.mask_method} before bias field correction")
+            b0_im = extract_b0(dwi_proc_im, bvals, first=True)
+            mask_im = mask_nifti(b0_im, method=args.mask_method, 
+                                 **args.bias_mask_kwargs)
+        logging.info("Bias correct within brain mask with N4BiasFieldCorrection")
+        (dwi_corr, _, _), bias_im = n4_bias_correct_dwi(
+            dwi_proc_im, bvals, bvecs, field=True, mask_img=mask_im
+        )
+        dwi_proc_im = dwi_corr
+    # Case 2: user-provided bias mask
+    else:
+        logging.info("Bias correct within user provided bias mask with N4BiasFieldCorrection")
+        (dwi_corr, _, _), bias_im = n4_bias_correct_dwi(
+            dwi_proc_im, bvals, bvecs, field=True, mask_img=bias_mask_im,
+        )
+        dwi_proc_im = dwi_corr
+    logging.info("Write bias image to file")
+    write_nifti(outputs['bias_filename'], bias_im)
+    logging.debug(f"dwi_proc_im: {dwi_proc_im}")
+    logging.debug(f"bias_im: {bias_im}")
+    logging.debug(f"mask_im: {mask_im}")
+    return dwi_proc_im, bias_im, mask_im
+
+def mask_b0_stage(args, dwi_proc_im, bvals, mask_im, outputs):
+    """
+    Extract B0 image and create brain mask if one was not provided.
+    """
+    logging.debug("mask_b0_stage")
+    # Extract B0
+    b0_im = extract_b0(dwi_proc_im, bvals, first=args.no_moco,
+        average=(not args.no_moco))
+    # Create mask only if user did not provide one
+    if mask_im is None:
+        logging.info(f"Mask B0 with {args.mask_method}")
+        mask_im = mask_nifti(b0_im, method=args.mask_method, **args.mask_kwargs)
+    logging.info(f"Write mask image to file")
+    write_nifti(outputs["mask_filename"], mask_im)
+    logging.info(f"Write B0 image to file")
+    write_nifti(outputs['b0_filename'], b0_im)
+    logging.debug(f"b0_im: {b0_im}")
+    logging.debug(f"mask_im: {mask_im}")
+    return b0_im, mask_im
+
+def tensor_fitting_stage(args, dwi_proc_im, bvals, bvecs, mask_im, outputs):
+    """
+    Estimate diffusion tensor and write tensor-derived scalar maps, and save.
+    """
+    logging.debug("tensor_fitting_stage")
+    # Restrict to Gaussian shells only
+    dwi_proc_im, bvals, bvecs = extract_gaussian_shells(
+        dwi_proc_im, bvals, bvecs
+    )
+    logging.info("Estimate tensor using WLS fit")
+    tensor_im = estimate_tensor(
+        dwi_proc_im, mask_im, bvals, bvecs, fit_method="WLS"
+    )
+
+    TSC = TensorScalarCalculator(
+        tensor_im, mask_im=mask_im,
+    )
+
+    logging.info("Save tensor and scalar maps")
+    write_nifti(outputs["tensor_filename"], tensor_im)
+    write_nifti(outputs["fa_filename"], TSC.FA)
+    write_nifti(outputs["tr_filename"], TSC.TR)
+    write_nifti(outputs["md_filename"], TSC.MD)
+    write_nifti(outputs["ax_filename"], TSC.AX)
+    write_nifti(outputs["rad_filename"], TSC.RAD)
+    fa_im = TSC.FA
+    logging.debug(f"tensor_im: {tensor_im}")
+    logging.debug(f"fa_im: {fa_im}")
+    return tensor_im, fa_im
+
+def registration_stage(args, b0_im, t1_im, t1_mask_im, fa_img, mask_im, outputs,
+    topup, phase_encs):
+    """
+    Register DTI to T1 space.
+    """
+    logging.debug("registration_stage")
+    if not args.t1:
+        return
+    if t1_mask_im is None:
+        logging.info("Skull strip the T1 before registration")
+        t1_im, t1_mask_im = mask_nifti(
+            t1_im, method=args.mask_method, return_brain=True,
+        )
+    logging.info("Register DTI to T1")
+    ants_registration_dti_t1(
+        outputs["registration_prefix"], b0_im, t1_im, fa_img=fa_img,
+        dti_mask_img=mask_im, syn=(topup is None), phase_enc=phase_encs[0]
+    )
+    
+def run_dti_preprocess(args):
+    """
+    Run the DiCIPHR DTI Processing pipeline.    
+    """    
+    # 0. First steps 
+    args = initialize_and_validate_args(args)
+    outputs = build_output_filenames(args)
+    
+    # 1. Load inputs
+    ( dwi_ims, bval_arrays, bvec_arrays, mask_im, bias_mask_im, 
+        t1_im, t1_mask_im ) = load_inputs(args)
+    
+    # 2. Get acquisition parameters from json files or from command line 
+    phase_encs, all_acqparams, keep_dwis = phase_enc_and_filter_dwis(
+        args, dwi_ims, bval_arrays
+    )
+    
+    # 3. Denoise the images which will be kept 
+    denoised_ims = denoising_stage(
+        args, dwi_ims, bval_arrays, bvec_arrays, keep_dwis
+    )
+    
+    # 4. Topup on the pre-denoised data - dwi_ims may now be padded  
+    ( dwi_ims, reference_im, topup, acqparams, index, unwarped_b0_im, mask_im 
+     ) = topup_stage(
+        args, dwi_ims, bval_arrays, bvec_arrays, all_acqparams, 
+        keep_dwis, outputs, mask_im, t1_im, t1_mask_im
+    )
+
+    # 5. Fill in the data from denoised_ims into their proper place in possibly padded array 
+    dwi_ims = fill_denoised_dwis(
+        dwi_ims, denoised_ims, keep_dwis, reference_im
+    )
     
     # 6. Concatenate DWIs and extract shells 
-    dwis = [(d,b,v) for d,b,v,k in zip(dwi_ims, bval_arrays, bvec_arrays, keep_dwis) if k]
-    if len(dwis) > 1:
-        dwi_proc_im, bvals, bvecs = concatenate_dwis(*dwis)
-    else:
-        dwi_proc_im, bvals, bvecs = dwis[0]
-    # extract shell if option provided 
-    if extract_shell: 
-        logging.info(f"Extract shells from multishell DWI: {extract_shell}")
-        dwi_proc_im, bvals, bvecs = extract_shells_from_multishell_dwi(dwi_proc_im, bvals, bvecs, extract_shell)
+    dwi_proc_im, bvals, bvecs = concatenate_and_extract_shells(
+        args, dwi_ims, bval_arrays, bvec_arrays, keep_dwis
+    )
     
-    # 7. Eddy 
-    if no_moco:
-        logging.info("Skipping motion correction.")
-    elif topup:
-        start_time = time.time()
-        if mask is None:
-            mask_im = mask_nifti(unwarped_b0_im, method=mask_method, **mask_kwargs)
-        # Run eddy 
-        logging.info("Run Eddy")
-        dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy_post_topup(
-                    dwi_proc_im, bvals, bvecs, topup, acqparams, index, mask_im, 
-                    unwarped_b0_im=unwarped_b0_im, replace_outliers=replace_outliers)                    
-        save_eddy_text(eddy_text_prefix, eddy_text_outputs)
-        end_time = time.time()
-        logging.info("Done eddy. Elapsed time {0:0.2f} minutes".format((end_time - start_time)/60.))
-    else:   
-        start_time = time.time()
-        if mask is None:
-            b0_im = extract_b0(dwi_proc_im, bvals, first=True)
-            # use slightly bigger mask (bias_mask_kwargs) for eddy without topup 
-            mask_im = mask_nifti(b0_im, method=mask_method, **bias_mask_kwargs)
-        logging.info("Run FSL eddy to correct for eddy and subject motion")
-        dwi_proc_im, bvals, bvecs, eddy_text_outputs = fsl_eddy(
-                    dwi_proc_im, bvals, bvecs, 
-                    mask_im, 
-                    readout_time=readout_time, 
-                    replace_outliers=replace_outliers
-        )
-        save_eddy_text(eddy_text_prefix, eddy_text_outputs)
-        end_time = time.time()
-        logging.info("Done eddy. Elapsed time {0:0.2f} minutes".format((end_time - start_time)/60.))
-    
-    # 8. Resample DWI
-    if resample > 0:
-        resample=[resample]*3
-        logging.info('Resample image to {} x {} x {}'.format(*resample))
-        dwi_proc_im = resample_image(dwi_proc_im, resample, interp='BSpline')
-        if bias_mask is not None:
-            logging.info('Resample bias_mask to {} x {} x {}'.format(*resample))
-            bias_mask_im = resample_image(bias_mask_im, resample, interp='NearestNeighbor')
-        if mask:
-            logging.info('Resample brain mask to {} x {} x {}'.format(*resample))
-            mask_im = resample_image(mask_im, resample, interp='NearestNeighbor')
-    
-    # 9. Bias correction 
-    if bias_corr: 
-        if bias_mask is None:
-            if mask is None:
-                logging.info(f"Mask B0 with {mask_method} before bias field correction")
-                b0_im = extract_b0(dwi_proc_im, bvals, first=True)
-                mask_im = mask_nifti(b0_im, method=mask_method, **bias_mask_kwargs)
-            logging.info('Bias correct within brain mask with N4BiasFieldCorrection')
-            dwi_n4, bias_im = n4_bias_correct_dwi(dwi_proc_im, bvals, bvecs, field=True, mask_img=mask_im)
-            dwi_proc_im, __, __ = dwi_n4 
-        else:
-            logging.info('Bias correct within user provided bias mask with N4BiasFieldCorrection')
-            dwi_n4, bias_im = n4_bias_correct_dwi(dwi_proc_im, bvals, bvecs, field=True, mask_img=bias_mask_im)
-            dwi_proc_im, __, __ = dwi_n4
-        write_nifti(bias_filename, bias_im)
-    
-    # 10. Mask B0 and erode mask
-    b0_im = extract_b0(dwi_proc_im, bvals, first=no_moco, average=(not no_moco))        
-    if mask is None:
-        logging.info(f"Mask B0 with {mask_method}")
-        mask_im = mask_nifti(b0_im, method=mask_method, **mask_kwargs)
-        logging.info('Write mask Nifti to file {}'.format(mask_filename))
-        write_nifti(mask_filename, mask_im)
-        # temp - testing - delete this line 
-        write_nifti(os.path.join(output_dir, f"{subject}_BET_mask.nii.gz"), mask_nifti(b0_im, method='bet'))
+    # 7. Eddy and final cropping if needed 
+    dwi_proc_im, bvals, bvecs, mask_im = eddy_stage(
+        args, dwi_proc_im, bvals, bvecs, mask_im, reference_im, outputs, 
+        topup, acqparams, index, unwarped_b0_im
+    )
 
-    # 11. Save DWI and extract final B0. 
+    # 8. Optionally resample DWI
+    dwi_proc_im, mask_im, bias_mask_im = resampling_stage(
+        args, dwi_proc_im, mask_im, bias_mask_im
+    )
+    
+    # 9. Bias correction
+    dwi_proc_im, bias_im, mask_im = bias_correction_stage(
+        args, dwi_proc_im, bvals, bvecs, mask_im, bias_mask_im, outputs, 
+    )
+    
+    # 10. Save the DWI 
     logging.info("Save processed DWI")    
-    write_dwi(dwi_processed_filename, dwi_proc_im, bvals, bvecs)
-    logging.info('Extract preprocessed B0 image')
-    write_nifti(b0_filename, b0_im)
+    write_dwi(outputs['dwi_processed_filename'], dwi_proc_im, bvals, bvecs)
+    
+    # 11. Mask B0 and erode mask
+    b0_im, mask_im = mask_b0_stage(
+        args, dwi_proc_im, bvals, mask_im, outputs
+    )
     
     # 12. Estimate tensor
-    dwi_proc_im, bvals, bvecs = extract_gaussian_shells(dwi_proc_im, bvals, bvecs)
-    logging.info("Estimate tensor using WLS fit")
-    tensor_im = estimate_tensor(dwi_proc_im, mask_im, bvals, bvecs, fit_method='WLS')
-    TSC = TensorScalarCalculator(tensor_im, mask_im=mask_im)
+    tensor_im, fa_im = tensor_fitting_stage(
+        args, dwi_proc_im, bvals, bvecs, mask_im, outputs
+    )
     
-    # 13. Save tensor files
-    logging.info("Save files")
-    write_nifti(tensor_filename, tensor_im)
-    write_nifti(fa_filename, TSC.FA)
-    write_nifti(tr_filename, TSC.TR)
-    write_nifti(md_filename, TSC.MD)
-    write_nifti(ax_filename, TSC.AX)
-    write_nifti(rad_filename, TSC.RAD)
-    
-    # 14. Registration 
-    if t1:
-        if t1_mask_im is None:
-            logging.info("Skull strip the T1 before registration")
-            t1_im, t1_mask_im = mask_nifti(t1_im, method=mask_method, return_brain=True)
-        logging.info("Register DTI to T1")
-        ants_registration_dti_t1(registration_prefix, 
-                 b0_im, t1_im, fa_img=TSC.FA, 
-                 dti_mask_img=mask_im, syn=(topup is None), 
-                 phase_enc=phase_encs[0])
-        
+    # 13. Registration 
+    registration_stage(
+        args, b0_im, t1_im, t1_mask_im, fa_im, mask_im, outputs, topup, phase_encs
+    )
+            
 if __name__ == '__main__': 
     main(sys.argv[1:])

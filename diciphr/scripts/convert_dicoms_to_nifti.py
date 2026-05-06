@@ -24,7 +24,7 @@ def buildArgsParser():
                     help='The project directory. Directory "Nifti/{subject}" will be created inside. Defaults to the current directory'
                     )
     p.add_argument('-m', '--mode', action='store', metavar='str', dest='mode_string', 
-                    type=str, required=False, default='convert', 
+                    type=str, required=False, default='none', 
                     help='Dicom sort operation mode: none (default), link, copy, move, anonymize'
                     )
     p.add_argument('-n', '--no-convert', action='store_true', dest='no_convert', required=False,
