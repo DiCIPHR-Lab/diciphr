@@ -9,7 +9,6 @@ from dipy.io.stateful_tractogram import StatefulTractogram, Space
 from dipy.tracking.utils import density_map, target
 from dipy.tracking.streamline import length, values_from_volume
 import xml.etree.ElementTree as ET
-import nibabel as nib
 
 ##############################   
 # COMMON PREPROCESSING STEPS #
@@ -66,6 +65,59 @@ def track_info(trk_input):
         'dimensions': sft.space_attributes[1], 
         'voxel sizes': sft.space_attributes[2], 
         'orientation': sft.space_attributes[3], 
+    }
+    
+def early_curvature(streamline, max_dist=10.0):
+    dists = np.linalg.norm(np.diff(streamline, axis=0), axis=1)
+    cumdist = np.cumsum(dists)    
+    angles = []
+    for i in range(len(dists) - 1):
+        if cumdist[i] > max_dist:
+            break
+        v1 = streamline[i+1] - streamline[i]
+        v2 = streamline[i+2] - streamline[i+1]
+        cosang = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        angles.append(np.arccos(np.clip(cosang, -1, 1)))
+    return np.mean(angles) if angles else np.nan
+
+def track_length_qc(trk_input, step_size=None, max_expected_length=200, 
+                    max_curv_window=10.0, min_short_length=15.0):
+    if isinstance(trk_input, StatefulTractogram):
+        sft = trk_input
+    else:
+        sft = load_trk(trk_input, reference='same')
+    streamline_lengths = length(sft.streamlines)
+    # Thresholds for short streamlines based on step size or voxel size 
+    voxel_size = np.mean(sft.space_attributes[1])  # or reference NIfTI
+    curv_window = min(max_curv_window, voxel_size*5 if step_size is None else step_size*10)
+    short_length = max(min_short_length, voxel_size * 7)   # (~15–18 mm typical for 2mm voxels)
+    # Distribution tail and percentile metrics 
+    left_tail_mass = len(streamline_lengths[streamline_lengths < short_length]) / len(streamline_lengths)
+    percentile10 = np.percentile(streamline_lengths, 10)
+    percentile90 = np.percentile(streamline_lengths, 90)
+    # Center of length distribution - lower for incorrect tractography 
+    median_length = np.median(streamline_lengths)
+    center_mask = (streamline_lengths > percentile10) & (streamline_lengths < percentile90)
+    trimmed_mean = np.mean(streamline_lengths[center_mask]) if center_mask.any() else np.nan
+    # Entropy - lower for incorrect tractography
+    bins = np.linspace(0, max_expected_length, 51)
+    hist, _ = np.histogram(streamline_lengths, bins=bins, density=False)
+    p = hist/hist.sum()
+    entropy_norm = (
+            -np.sum(p[p>0] * np.log(p[p>0])) / np.log(len(p))
+            if hist.sum()>0 else np.nan
+    )
+    # Early Curvature - would be higher for incorrect tractography 
+    curvatures = np.asarray([early_curvature(s, curv_window) for s in sft.streamlines])
+    median_curvature = np.median(curvatures[np.isfinite(curvatures)])
+    return {
+        'left_tail_mass': left_tail_mass, 
+        'percentile10': percentile10, 
+        'percentile90': percentile90, 
+        'median_length': median_length, 
+        'trimmed_mean': trimmed_mean,     
+        'entropy_norm': entropy_norm,    
+        'median_curvature': median_curvature,         
     }
     
 def track_stats(trk_input, nifti_scalars={}):
@@ -125,14 +177,17 @@ def volume_symmetry(ipsi_obj, contra_obj, absolute=False):
     denom = (ipsi_vol + contra_vol)/2
     return numer/denom 
 
-def track_density_statistics(input_obj):
+def track_density_statistics(input_obj, threshold=0):
     if is_nifti_object(input_obj):
         input_tdi = input_obj
     else:
         input_tdi = track_density_image(input_obj)
     data = input_tdi.get_fdata()
-    data = data[data>0]
-    return data.mean(), data.std()
+    data = data[data>threshold]
+    zooms = input_tdi.header.get_zooms()
+    factor = zooms[0]*zooms[1]*zooms[2]
+    volume = len(data)*factor 
+    return data.mean(), data.std(), volume 
                         
 def spline_filter(input_trk_file, output_trk_file, step_size=0.2):
     logging.debug('diciphr.tractography.track_utils.spline_filter')
