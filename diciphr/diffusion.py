@@ -90,40 +90,70 @@ def _affines_match(aff1, aff2):
     rotation_same=np.sum(np.abs(aff1[0:3,0:3] - aff2[0:3,0:3])) < 1e-4
     return rotation_same and origin_same
 
-def concatenate_dwis(*args):
-    '''Concatenate two or more dwi images into one.
-    
-    Positional arguments are input as tuples, (dwi_im, bvals, bvecs),
-    dwi_im is nibabel.Nifti1Image. bvals, bvecs are numpy.ndarray.
-    
-    Example usage:
-        dwi1 = read_dwi('dwi_file1.nii.gz') #returns dwi_im, bvals, bvecs tuple
-        dwi2 = read_dwi('dwi_file2.nii.gz')
-        dwi_cat = concatenate_dwis(dwi1,dwi2)
-    
+def concatenate_dwis(*args, keep_dwis=None):
+    """
+    Concatenate multiple DWI datasets into a single 4D image with corresponding
+    b-values and b-vectors, optionally filtering which inputs are included.
+
+    Each positional argument must be a 3-tuple:
+        (dwi_im, bvals, bvecs)
+
+    where:
+        dwi_im : nibabel.Nifti1Image
+            4D diffusion-weighted image (X, Y, Z, N volumes)
+        bvals : array_like
+            Diffusion b-values, shape (1, N)
+        bvecs : array_like
+            Diffusion gradient directions, shape (3, N)
+
     Parameters
     ----------
-    \*args : 
-        Tuples (dwi_im, bvals, bvecs)
-        
+    *args : tuple
+        Sequence of (dwi_im, bvals, bvecs) inputs to concatenate. All inputs
+        should have compatible spatial dimensions and orientation.
+
+    keep_dwis : list of bool, optional
+        Boolean mask indicating which inputs to include in the concatenation.
+        If None, all inputs are included. Length must match len(args).
+
     Returns
     -------
-    tuple
-        A tuple of dwi_im (nibabel.Nifti1Image), bvals, bvecs (numpy.ndarray)
-    '''
-    logging.debug('diciphr.diffusion.concatenate_dwis')
-    dwi_im_list = [a[0] for a in args]
-    bvals_list = [a[1] for a in args]
-    bvecs_list = [a[2] for a in args]
+    dwi_im_out : nibabel.Nifti1Image
+        Concatenated 4D DWI image.
+
+    bvals_out : numpy.ndarray
+        Concatenated b-values, shape (N_total,).
+
+    bvecs_out : numpy.ndarray
+        Concatenated b-vectors, shape (3, N_total).
+    """
+    logging.debug('diciphr.diffusion.concatenate_dwis')    
+    for a in args:
+        if not (isinstance(a, tuple) and len(a) == 3):
+            raise TypeError(f"Each arg must be a (dwi_im, bvals, bvecs) tuple; got {type(a)}")
+    if keep_dwis is None:
+        keep_dwis = [True for a in args]    
+    elif len(keep_dwis) != len(args):
+        raise ValueError(
+                f"keep_dwis length {len(keep_dwis)} != number of inputs {len(args)}"
+        )
+    dwi_im_list = [] 
+    bvals_list = []
+    bvecs_list = []
+    for a, keep in zip(args, keep_dwis):
+        dwi_im, bvals, bvecs = a 
+        if keep:
+            dwi_im_list.append(dwi_im)
+            bvals_list.append(bvals)
+            bvecs_list.append(bvecs)
     bvals_out = np.concatenate(bvals_list, axis=1)
     bvecs_out = np.concatenate(bvecs_list, axis=1)
-    
-    affines=[a.affine for a in dwi_im_list]
+    affines = [a.affine for a in dwi_im_list]
     affines_match = True
     for idx in range(len(affines)-1):
         affines_match = affines_match and _affines_match(affines[idx], affines[idx+1])
     if not affines_match:
-        logging.warning('Attempting to concatenate nifti files whose affine transformations do not match')
+        logging.warning("Attempting to concatenate nifti files whose affine transformations do not match")
     dwi_im_out = concatenate_niftis(*dwi_im_list)
     is_valid_dwi(dwi_im_out, bvals_out, bvecs_out, True)
     return dwi_im_out, bvals_out, bvecs_out
@@ -401,10 +431,17 @@ def compute_suggested_patch_radius_3d(arr):
 def mppca_denoise(dwi_im, bvals, bvecs, return_diff=False, patch_radius=2):
     logging.debug('diciphr.diffusion.mppca_denoise')
     data = dwi_im.get_fdata()
+    nt = data.shape[3]
+    if nt<30:
+        logging.warning("MP-PCA denoising may be unstable with fewer than 30 volumes. Check results and consider running without denoising")
     hdr = dwi_im.header 
     affine = dwi_im.affine
     suggested_patch_radius = compute_suggested_patch_radius_3d(data)
     if suggested_patch_radius > patch_radius:
+        logging.info(
+                f"Increasing patch_radius from {patch_radius} to {suggested_patch_radius} "
+                f"to ensure patch voxels > number of volumes ({nt})"
+            )
         patch_radius = suggested_patch_radius
     denoised_arr = mppca(data, patch_radius=patch_radius)
     dwi_denoised_im = nifti_image(denoised_arr, affine, hdr)
@@ -905,6 +942,13 @@ def prepare_acqparams_nojson(readout_time, phaseenc):
     acqparams_line.append(readout_time)
     return acqparams_line
 
+def unique_acqparams(acqparams_list):
+    uniq = set()
+    for acqparams_line in acqparams_list:
+        acq = acqparams_line[:3]
+        uniq.add(tuple(acq))
+    return len(uniq)
+
 def prepare_index(bval_arrays, keep_array, average_b0s=False):
     """
     Generates an index list for multiple b-value arrays, identifying and grouping b=0 values.
@@ -944,27 +988,73 @@ def prepare_index(bval_arrays, keep_array, average_b0s=False):
         adj_value = np.max(index)
     return index 
 
-def pad_image_for_topup(nifti_img):
-    nifti_img.shape 
+def _adjustment_to_even_dimensions(nifti_img):
     x_adjust = [0,0]
     y_adjust = [0,0]
     z_adjust = [0,0]
-    adjusted = False
     if nifti_img.shape[0]%2 != 0:
         x_adjust = [0,1]
-        adjusted = True
     if nifti_img.shape[1]%2 != 0:
         y_adjust = [0,1]
-        adjusted = True
     if nifti_img.shape[2]%2 != 0:
         z_adjust = [0,1]
-        adjusted = True
-    if adjusted:
-        logging.warning("Inputs to topup need to have even voxel dimensions. Image was padded with adjustments x:{0} y:{1} z:{2}".format(
-            x_adjust, y_adjust, z_adjust
-        ))
-    return crop_pad_image(nifti_img, x_adjust, y_adjust, z_adjust), adjusted
-    
+    return x_adjust, y_adjust, z_adjust
+        
+def pad_image_for_topup(nifti_img, reference_img=None):
+    """
+    Pad images with odd dimensions prior to running topup.
+    If no padding is required, returns nifti_img unchanged.
+    If reference_img is provided, it must already have even spatial dimensions.
+    """
+    x_adjust, y_adjust, z_adjust = _adjustment_to_even_dimensions(nifti_img)
+    adjusted = not (x_adjust == y_adjust == z_adjust == [0, 0])
+    if not adjusted:
+        # No action needed
+        return nifti_img
+    if reference_img is None:
+        logging.info(
+            "Padding image to even dimensions with adjustments "
+            f"x:{x_adjust} y:{y_adjust} z:{z_adjust}"
+        )
+        return crop_pad_image(nifti_img, x_adjust, y_adjust, z_adjust)
+    # reference_img provided, enforce correct usage
+    rx, ry, rz = reference_img.shape[:3]
+    assert rx % 2 == 0 and ry % 2 == 0 and rz % 2 == 0, (
+        "reference_img must have even spatial dimensions"
+    )
+    ref_shape = reference_img.shape[:3]
+    data = np.asanyarray(nifti_img.dataobj)
+    dtype = data.dtype
+    mask = np.ones(ref_shape, dtype=bool)
+    if x_adjust[1]:
+        mask[-1, :, :] = False
+    if y_adjust[1]:
+        mask[:, -1, :] = False
+    if z_adjust[1]:
+        mask[:, :, -1] = False
+    if data.ndim == 3:
+        new_data = np.zeros(ref_shape, dtype=dtype)
+        new_data[mask] = data.reshape(-1)
+    else:
+        new_data = np.zeros(ref_shape + data.shape[3:], dtype=dtype)
+        new_data[mask, :] = data.reshape((-1,) + data.shape[3:])
+    return nifti_image(new_data, reference_img.affine, header=reference_img.header.copy())
+
+def crop_image_post_topup(padded_img, reference_img):
+    """
+    Crop images with odd dimensions after running topup, using a reference image.
+    """
+    x_adjust, y_adjust, z_adjust = _adjustment_to_even_dimensions(reference_img)
+    if x_adjust == y_adjust == z_adjust == [0, 0]:
+        return padded_img
+    data = np.asanyarray(padded_img.dataobj)
+    nx, ny, nz = reference_img.shape[:3]
+    if data.ndim == 3:
+        cropped = data[:nx, :ny, :nz]
+    else:
+        cropped = data[:nx, :ny, :nz, ...]
+    return nifti_image(cropped, reference_img.affine, header=reference_img.header.copy())
+
 def synb0_disco(dwi_img, bvals, acqparams, t1_img, t1_mask=None, topup=False, synb0_sif=None, fslicense=None):
     acqparams2 = list(acqparams[:3]) + [0.0]
     if synb0_sif is None:
@@ -1011,7 +1101,6 @@ def run_topup(dwi_images, bval_arrays, bvec_arrays, acqparams_list, output_base,
     b0_images = [] 
     for dwi_img, bval, bvec, acqparams_line in zip(dwi_images, bval_arrays, bvec_arrays, acqparams_list):
         b0_img = extract_b0(dwi_img, bval, first=first_b0, average=average_b0s, mcflirt=mcflirt)
-        b0_img, adjusted = pad_image_for_topup(b0_img)
         b0_images.append(b0_img)
         n = 1 if len(b0_img.shape) == 3 else b0_img.shape[3]
         for nn in range(n):
@@ -1057,18 +1146,9 @@ def run_topup(dwi_images, bval_arrays, bvec_arrays, acqparams_list, output_base,
         shutil.copyfile(tmpbase+'_index.txt', output_base+'_index.txt')
         if slspec is not None:
             shutil.copyfile(tmpbase+'_slspec.txt', output_base+'_slspec.txt')
-        # undo cropping/padding if necessary 
-        if adjusted:
-            field_img = resample_image(read_nifti(tmpbase+'_field.nii.gz'), master=dwi_images[0], interp='NearestNeighbor')
-            field_img.to_filename(output_base+'_field.nii.gz')
-            fieldcoef_img = resample_image(read_nifti(tmpbase+'_fieldcoef.nii.gz'), master=dwi_images[0], interp='NearestNeighbor')
-            fieldcoef_img.to_filename(output_base+'_fieldcoef.nii.gz')
-            b0u_img = resample_image(read_nifti(tmpbase+'_b0u.nii.gz'), master=dwi_images[0], interp='NearestNeighbor')
-            b0u_img.to_filename(output_base+'_b0u.nii.gz')
-        else:
-            shutil.copyfile(tmpbase+'_field.nii.gz', output_base+'_field.nii.gz')
-            shutil.copyfile(tmpbase+'_fieldcoef.nii.gz', output_base+'_fieldcoef.nii.gz')
-            shutil.copyfile(tmpbase+'_b0u.nii.gz', output_base+'_b0u.nii.gz')
+        shutil.copyfile(tmpbase+'_field.nii.gz', output_base+'_field.nii.gz')
+        shutil.copyfile(tmpbase+'_fieldcoef.nii.gz', output_base+'_fieldcoef.nii.gz')
+        shutil.copyfile(tmpbase+'_b0u.nii.gz', output_base+'_b0u.nii.gz')
     return output_base
 
 def run_topup_post_synb0(dwi_img, bvals, bvecs, synb0_img, acqparams_line, output_base, smooth_fwhm=1.15, config=None):
@@ -1078,8 +1158,6 @@ def run_topup_post_synb0(dwi_img, bvals, bvecs, synb0_img, acqparams_line, outpu
         bvals = round_bvals(bvals)
         ref_img = split_image(dwi_img, dimension='t', index=0) # original image size 
         logging.debug(f'ref_img.shape : {ref_img.shape}')
-        dwi_img, adjusted1 = pad_image_for_topup(dwi_img)
-        synb0_img, adjusted2 = pad_image_for_topup(synb0_img)
         logging.debug(f'dwi_img.shape : {dwi_img.shape}')
         logging.debug(f'synb0_img.shape : {synb0_img.shape}')
         b0s = [] 
@@ -1137,23 +1215,10 @@ def run_topup_post_synb0(dwi_img, bvals, bvecs, synb0_img, acqparams_line, outpu
         # run topup 
         logging.info("Run topup")
         ExecFSLCommand(topup_cmd).run()  
-        # undo cropping/padding if necessary 
         shutil.copyfile(tmpbase+'_movpar.txt', output_base+'_movpar.txt')
-        if adjusted1 or adjusted2:
-            logging.debug('Adjusted')
-            field_img = resample_image(read_nifti(tmpbase+'_field.nii.gz'), master=ref_img, interp='NearestNeighbor')
-            field_img.to_filename(output_base+'_field.nii.gz')
-            fieldcoef_img = resample_image(read_nifti(tmpbase+'_fieldcoef.nii.gz'), master=ref_img, interp='NearestNeighbor')
-            fieldcoef_img.to_filename(output_base+'_fieldcoef.nii.gz')
-            b0u_img = resample_image(read_nifti(tmpbase+'_b0u.nii.gz'), master=ref_img, interp='NearestNeighbor')
-            b0u_img.to_filename(output_base+'_b0u.nii.gz')
-            logging.debug(f'field_img.shape : {field_img.shape}')
-            logging.debug(f'fieldcoef_img.shape : {fieldcoef_img.shape}')
-            logging.debug(f'b0u_img.shape : {b0u_img.shape}')
-        else:
-            shutil.copyfile(tmpbase+'_field.nii.gz', output_base+'_field.nii.gz')
-            shutil.copyfile(tmpbase+'_fieldcoef.nii.gz', output_base+'_fieldcoef.nii.gz')
-            shutil.copyfile(tmpbase+'_b0u.nii.gz', output_base+'_b0u.nii.gz')
+        shutil.copyfile(tmpbase+'_field.nii.gz', output_base+'_field.nii.gz')
+        shutil.copyfile(tmpbase+'_fieldcoef.nii.gz', output_base+'_fieldcoef.nii.gz')
+        shutil.copyfile(tmpbase+'_b0u.nii.gz', output_base+'_b0u.nii.gz')
     return output_base
 
 def apply_topup(images, topup_prefix, acqparamstxt, index=None):

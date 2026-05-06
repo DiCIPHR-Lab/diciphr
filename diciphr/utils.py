@@ -410,6 +410,22 @@ def check_inputs(*paths, nifti=False, directory=False, writable=False):
     else:
         return os.path.realpath(paths[0])
 
+def dwi_filenames_from_directory(directory):
+    all_files = sorted(os.listdir(directory))
+    bval_files = list(filter(lambda fn: fn.endswith('.bval'), all_files))
+    if len(bval_files) == 0:
+        raise FileNotFoundError('No diffusion .bval files found in directory')
+    nifti_files = []
+    for bv in bval_files:
+        for ext in ['nii.gz', 'nii', 'hdr']:
+            fn = os.path.join(directory, bv[:-4]+ext)
+            logging.info(fn)
+            if is_nifti_file(fn):
+                nifti_files.append(fn)
+                break 
+            raise FileNotFoundError('Nifti file corresponding to bval file does not exist')
+    return nifti_files
+
 def logical_or(*datas):
     '''
     Get the logical union of some numpy boolean arrays
