@@ -23,12 +23,12 @@ def buildArgsParser():
                     type=str, required=False,
                     help='Output track file'
                     )
-    p.add_argument('-i', action='store', metavar='nii', dest='include_masks',
-                    type=str, required=False, nargs="*", default=[], 
+    p.add_argument('-i', action='append', metavar='nii', dest='include_masks',
+                    type=str, required=False, default=[], 
                     help='Include mask(s)'
                     )
-    p.add_argument('-x', action='store', metavar='nii', dest='exclude_masks',
-                    type=str, required=False, nargs="*", default=[], 
+    p.add_argument('-x', action='append', metavar='nii', dest='exclude_masks',
+                    type=str, required=False, default=[], 
                     help='Exclude mask(s)'
                     )
     p.add_argument('-t','--tdi', action='store', metavar='tdi', dest='tdi_filename',
