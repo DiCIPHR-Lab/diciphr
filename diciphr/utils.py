@@ -622,9 +622,6 @@ class ExecFSLCommand(ExecCommand):
             fslsif = container_path
         else:
             fslsif = os.environ.get('FSLSIF',None)
-            if (fslsif is not None) and (not os.path.exists(str(fslsif))):
-                logging.warning(f"FSLSIF defined in environmental variables, but path does not exist: {fslsif}")
-                fslsif = None
         if fslsif:
             fslcmd = os.path.basename(cmd_array[0])
             # use apptainer 
