@@ -120,42 +120,159 @@ def track_length_qc(trk_input, step_size=None, max_expected_length=200,
         'median_curvature': median_curvature,         
     }
     
-def track_stats(trk_input, nifti_scalars={}):
+def _streamline_curvature_stats(sl, min_length=0.0, min_points=3, eps=1e-12):
+    """
+    Compute discrete curvature summaries for one streamline.
+
+    Streamlines failing min_points or min_length return NaNs.
+    Those NaNs are later excluded from bundle-level summaries.
+    """
+    sl = np.asarray(sl, dtype=float)
+    nan_ret = {
+            "length": np.nan,
+            "total_curvature": np.nan,
+            "mean_curvature": np.nan,
+            "valid_curvature": False,
+        }
+    if sl.shape[0] < min_points:
+        return nan_ret
+    seg = np.diff(sl, axis=0)
+    seg_len = np.linalg.norm(seg, axis=1)
+    valid_seg = seg_len > eps
+    if np.count_nonzero(valid_seg) < 2:
+        return nan_ret
+    seg = seg[valid_seg]
+    seg_len = seg_len[valid_seg]
+    streamline_len = np.sum(seg_len)
+    if streamline_len < min_length:
+        nan_ret["length"] = float(streamline_len)
+        return nan_ret
+    tangents = seg / seg_len[:, None]
+    dots = np.sum(tangents[:-1] * tangents[1:], axis=1)
+    dots = np.clip(dots, -1.0, 1.0)
+    angles = np.arccos(dots)
+    total_curvature = np.sum(angles)
+    mean_curvature = total_curvature / streamline_len
+    return {
+        "length": float(streamline_len),
+        "total_curvature": float(total_curvature),
+        "mean_curvature": float(mean_curvature),
+        "valid_curvature": True,
+    }
+
+def _bundle_curvature_stats(streamlines, min_length=0.0, min_points=3, eps=1e-12):
+    """
+    Compute bundle-level curvature summaries while ignoring invalid
+    or too-short streamlines.
+    """
+    curv_stats = [
+        _streamline_curvature_stats(
+            sl,
+            min_length=min_length,
+            min_points=min_points,
+            eps=eps,
+        )
+        for sl in streamlines
+    ]
+    lengths = np.array([x["length"] for x in curv_stats], dtype=float)
+    total_curvatures = np.array([x["total_curvature"] for x in curv_stats], dtype=float)
+    mean_curvatures = np.array([x["mean_curvature"] for x in curv_stats], dtype=float)
+    valid_flags = np.array([x["valid_curvature"] for x in curv_stats], dtype=bool)
+    valid = (
+        valid_flags
+        & np.isfinite(lengths)
+        & np.isfinite(total_curvatures)
+        & np.isfinite(mean_curvatures)
+        & (lengths >= min_length)
+    )
+    n_valid = int(np.count_nonzero(valid))
+    n_total = int(len(curv_stats))
+    n_excluded = n_total - n_valid
+    if n_valid == 0:
+        return {
+            "number curvature-valid streamlines": n_valid,
+            "number curvature-excluded streamlines": n_excluded,
+            "mean total curvature": np.nan,
+            "SD total curvature": np.nan,
+            "mean normed curvature": np.nan,
+            "SD normed curvature": np.nan,
+            "length normed mean curvature": np.nan,
+        }
+    lengths_valid = lengths[valid]
+    total_valid = total_curvatures[valid]
+    mean_valid = mean_curvatures[valid]
+    return {
+        "number curvature-valid streamlines": n_valid,
+        "number curvature-excluded streamlines": n_excluded,
+        "mean total curvature": np.mean(total_valid),
+        "SD total curvature": np.std(total_valid),
+        "mean normed curvature": np.mean(mean_valid),
+        "SD normed curvature": np.std(mean_valid),
+        "length normed mean curvature": np.sum(total_valid) / np.sum(lengths_valid),
+    }
+
+def track_stats(trk_input, ref_img=None, nifti_scalars={}):
     if isinstance(trk_input, StatefulTractogram):
         sft = trk_input
     else:
-        sft = load_trk(trk_input, reference='same')
+        sft = load_trk(trk_input, reference="same")
+
     streamline_lengths = length(sft.streamlines)
-    tdi_img = track_density_image(sft)
+
+    tdi_img = track_density_image(sft, ref_img=ref_img)
     nvoxels = np.sum(tdi_img.get_fdata() > 0)
+
     zooms = tdi_img.header.get_zooms()
-    volume = nvoxels * zooms[0] * zooms[1] * zooms[2] / 1000.0
-    # to do mean FA of streamlines or of voxels 
+    volume = nvoxels * zooms[0] * zooms[1] * zooms[2]
+
+    # Compute curvature in RASMM space so units are physical.
+    sft_rasmm = StatefulTractogram.from_sft(sft.streamlines, sft)
+    sft_rasmm.to_rasmm()
+    curvature_stats = _bundle_curvature_stats(sft_rasmm.streamlines)
+
     ret_dict = {
-        'number streamlines': len(sft), 
-        'min length': np.min(streamline_lengths),
-        'max length': np.max(streamline_lengths),
-        'mean length': np.mean(streamline_lengths),
-        'SD length' : np.std(streamline_lengths), 
-        'number voxels': nvoxels, 
-        'volume' : volume
+        "number streamlines": len(sft),
+        "min length": np.min(streamline_lengths),
+        "max length": np.max(streamline_lengths),
+        "mean length": np.mean(streamline_lengths),
+        "SD length": np.std(streamline_lengths),
+        "number voxels": nvoxels,
+        "volume": volume,
+        "mean total curvature": curvature_stats["mean total curvature"],
+        "SD total curvature": curvature_stats["SD total curvature"],
+        "mean normed curvature": curvature_stats["mean normed curvature"],
+        "SD normed curvature": curvature_stats["SD normed curvature"],
+        "length normed mean curvature": curvature_stats["length normed mean curvature"],
     }
+
     if nifti_scalars:
         sft = StatefulTractogram.from_sft(sft.streamlines, sft)
         sft.to_rasmm()
+
     for scalar_name, scalar_img in nifti_scalars.items():
-        scalar_values = values_from_volume(scalar_img.get_fdata(), sft.streamlines, affine=scalar_img.affine)
+        scalar_values = values_from_volume(
+            scalar_img.get_fdata(),
+            sft.streamlines,
+            affine=scalar_img.affine,
+        )
+
         scalar_values = np.concatenate(scalar_values)
         scalar_values = scalar_values[np.isfinite(scalar_values)]
-        ret_dict['min '+scalar_name] = np.min(scalar_values)
-        ret_dict['max '+scalar_name] = np.max(scalar_values)
-        ret_dict['mean '+scalar_name] = np.mean(scalar_values)
-        ret_dict['SD '+scalar_name] = np.std(scalar_values)
+
+        ret_dict["min " + scalar_name] = np.min(scalar_values)
+        ret_dict["max " + scalar_name] = np.max(scalar_values)
+        ret_dict["mean " + scalar_name] = np.mean(scalar_values)
+        ret_dict["SD " + scalar_name] = np.std(scalar_values)
+
     return ret_dict
+
         
-def region_coverage(trk_input, roi_img):
-    tdi_img = track_density_image(trk_input, ref_img=roi_img)
-    intersection_img = multiply_images(threshold_image(tdi_img), threshold_image(roi_img))
+def region_coverage(trk_input, roi_img, density_threshold=0):
+    if is_nifti_object(trk_input):
+        tdi_img = trk_input
+    else:
+        tdi_img = track_density_image(trk_input, ref_img=roi_img)
+    intersection_img = multiply_images(threshold_image(tdi_img, density_threshold), threshold_image(roi_img))
     numer = (intersection_img.get_fdata()>0).sum()
     denom = (roi_img.get_fdata()>0).sum()
     return float(numer)/float(denom)
@@ -256,25 +373,6 @@ def filter_tracks_exclude(input_trk_file, output_trk_file, exclude_mask_files):
     logging.debug(f'Filtered tractogram saved to {output_trk_file}')
     return output_trk_file
 
-#def track_density_image(trk_input, ref_img=None, output_filename=None):
-#    if isinstance(trk_input, StatefulTractogram):
-#        sft = trk_input
-#    else:
-#        sft = load_trk(trk_input, reference=ref_img if ref_img else 'same')
-#    sft_copy = StatefulTractogram.from_sft(sft.streamlines, sft, data_per_point=sft.data_per_point, data_per_streamline=sft.data_per_streamline)
-#    sft_copy.to_rasmm()
-#    if ref_img is None:
-#        ref_affine = sft.space_attributes[0]
-#        ref_shape = sft.space_attributes[1]
-#    else:
-#        ref_affine = ref_img.affine
-#        ref_shape = ref_img.shape
-#    tdi = density_map(sft_copy.streamlines, ref_affine, ref_shape)    
-#    tdi_im = nifti_image(np.asarray(tdi, dtype=np.uint8), ref_affine)
-#    if output_filename is not None:
-#        write_nifti(output_filename, tdi_im)
-#    return tdi_im
-    
 def track_density_image(trk_input, ref_img=None, output_filename=None):
     """
     Build a track density NIfTI image from a .trk (or a StatefulTractogram).
