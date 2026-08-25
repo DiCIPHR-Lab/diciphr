@@ -332,7 +332,6 @@ def filter_tracks_include(input_trk_file, output_trk_file, include_mask_files):
     filtered_streamlines = sft.streamlines 
     for include_mask in include_masks:
         logging.debug('Filtering streamlines using target with include=True')
-        print(sft.affine)
         filtered_streamlines = target(filtered_streamlines, sft.affine, include_mask, include=True)
     filtered_sft = StatefulTractogram.from_sft(
         filtered_streamlines,
@@ -362,7 +361,6 @@ def filter_tracks_exclude(input_trk_file, output_trk_file, exclude_mask_files):
     filtered_streamlines = sft.streamlines 
     for exclude_mask in exclude_masks:
         logging.debug('Filtering streamlines using target with include=True')
-        print(sft.affine)
         filtered_streamlines = target(filtered_streamlines, sft.affine, exclude_mask, include=False)
 
     filtered_sft = StatefulTractogram.from_sft(
