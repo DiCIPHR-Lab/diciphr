@@ -1,14 +1,71 @@
 import os, logging
 import numpy as np
-from diciphr.utils import ExecCommand, force_to_list
+import pandas as pd 
+from diciphr.utils import ExecCommand, TempDirManager, force_to_list
 from diciphr.nifti_utils import ( read_nifti, write_nifti, nifti_image, 
                              is_nifti_object, threshold_image, multiply_images )
 from diciphr.diffusion import calculate_lmax_from_bvecs
-from dipy.io.streamline import load_trk, save_trk, load_tractogram 
+from dipy.io.streamline import load_trk, save_trk, load_tractogram
 from dipy.io.stateful_tractogram import StatefulTractogram, Space
 from dipy.tracking.utils import density_map, target
 from dipy.tracking.streamline import length, values_from_volume
 import xml.etree.ElementTree as ET
+
+################################
+# Tractography transformations #
+################################
+def flatten_streamlines(streamlines):
+    lengths = [len(s) for s in streamlines]
+    points = np.vstack(streamlines)
+    return points, lengths
+
+def unflatten_streamlines(points, lengths):
+    streamlines = []
+    start = 0
+    for n in lengths:
+        stop = start + n
+        streamlines.append(points[start:stop])
+        start = stop
+    return streamlines
+
+def ants_transform_points(points, transforms):
+    """
+    Apply ants transformation stack to point data with antsApplyTransformsToPoints
+    """
+    def points_invert_xy(points):
+        points = points.copy()
+        points[:,0] *= -1
+        points[:,1] *= -1
+        return points 
+    points = points_invert_xy(points) # invert x and y to ITK (LPS) coordinates 
+    with TempDirManager(prefix='filter_tracks') as manager:
+        tmpdir = manager.path()
+        input_csv = os.path.join(tmpdir,"points_in.csv")
+        output_csv = os.path.join(tmpdir,"points_out.csv")
+        pd.DataFrame(points,columns=["x", "y", "z"]).to_csv(
+            input_csv,index=False
+        )
+        cmd = [
+            "antsApplyTransformsToPoints",
+            "-d", "3",
+            "-i", input_csv,
+            "-o", output_csv,
+        ]
+        for tfm in transforms:
+            cmd.extend(["-t",tfm])
+        ExecCommand(cmd).run()
+        out = pd.read_csv(output_csv)
+        transformed_points = (out[["x", "y", "z"]].to_numpy(dtype=float))
+        # invert x and y coordinates from ITK (LPS) to RAS 
+        transformed_points = points_invert_xy(transformed_points)
+    return transformed_points
+
+def transform_tractogram(sft, ref_nii, transforms):
+    streamlines = list(sft.streamlines)
+    points, lengths = flatten_streamlines(streamlines)
+    transformed_points = ants_transform_points(points,transforms)
+    transformed_streamlines = unflatten_streamlines(transformed_points, lengths)
+    return StatefulTractogram(transformed_streamlines, ref_nii, Space.RASMM)
 
 ##############################   
 # COMMON PREPROCESSING STEPS #
@@ -266,7 +323,6 @@ def track_stats(trk_input, ref_img=None, nifti_scalars={}):
 
     return ret_dict
 
-        
 def region_coverage(trk_input, roi_img, density_threshold=0):
     if is_nifti_object(trk_input):
         tdi_img = trk_input
@@ -332,6 +388,7 @@ def filter_tracks_include(input_trk_file, output_trk_file, include_mask_files):
     filtered_streamlines = sft.streamlines 
     for include_mask in include_masks:
         logging.debug('Filtering streamlines using target with include=True')
+        print(sft.affine)
         filtered_streamlines = target(filtered_streamlines, sft.affine, include_mask, include=True)
     filtered_sft = StatefulTractogram.from_sft(
         filtered_streamlines,
@@ -361,6 +418,7 @@ def filter_tracks_exclude(input_trk_file, output_trk_file, exclude_mask_files):
     filtered_streamlines = sft.streamlines 
     for exclude_mask in exclude_masks:
         logging.debug('Filtering streamlines using target with include=True')
+        print(sft.affine)
         filtered_streamlines = target(filtered_streamlines, sft.affine, exclude_mask, include=False)
 
     filtered_sft = StatefulTractogram.from_sft(
