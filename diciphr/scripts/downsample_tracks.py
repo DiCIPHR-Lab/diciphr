@@ -53,14 +53,14 @@ def main(argv):
         logging.info('Reading image file {}'.format(ref_nifti))
         ref_im = read_nifti(ref_nifti)
         logging.info('Reading track file {}'.format(input_trk))
-        tractogram = load_trk(input_trk, ref_im)
+        tractogram = load_trk(input_trk, ref_im, bbox_valid_check=False)
         streams = tractogram.get_streamlines_copy()
         streams_downsampled = downsample_tracks_fdc(streams, ref_im, 
                         downsample_percent=downsample_percent,
                         num_iters=num_iters)
         logging.info('Write to output {}'.format(output_trk))
         tractogram = StatefulTractogram(streams_downsampled, ref_im, Space.RASMM)
-        save_trk(tractogram, output_trk)
+        save_trk(tractogram, output_trk, bbox_valid_check=False)
     except Exception:
         logging.exception(f"Exception encountered running {PROTOCOL_NAME}")
         raise
